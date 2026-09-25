@@ -1,24 +1,126 @@
-import { GoogleGenAI, Type } from '@google/genai';
-
-let aiClient: GoogleGenAI | null = null;
-function getGeminiClient(): GoogleGenAI | null {
-  if (!aiClient && process.env.GEMINI_API_KEY) {
-    try {
-      aiClient = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        httpOptions: { headers: { 'User-Agent': 'afflatus-engine-v1' } },
-      });
-    } catch (err) {
-      console.warn('[QueryUnderstanding] Failed to init Gemini:', err);
-    }
-  }
-  return aiClient;
-}
+import { Type } from '@google/genai';
+import { generateContentWithFallback } from './geminiClient';
 
 export class QueryUnderstandingService {
+
+  /**
+   * Returns whether the latest user message is Afflatus/collaboration related.
+   */
+  static async classifyAfflatusIntent(
+    messages: { role: string; content: string }[]
+  ): Promise<{ inScope: boolean; wantsRecommendation?: boolean; reply?: string }> {
+    const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
+    const text = lastUser.toLowerCase().trim();
+
+    // Pure greetings / small talk → chat only, NEVER recommend
+    const greetings = [
+      'hi', 'hello', 'hey', 'hola', 'namaste', 'yo', 'sup', 'good morning',
+      'good afternoon', 'good evening', 'how are you', 'how r you', "what's up",
+      'whats up', 'thanks', 'thank you', 'ok', 'okay', 'cool', 'nice', 'bye',
+    ];
+    const isGreeting =
+      greetings.some((g) => text === g || text === g + '!' || text === g + '.') ||
+      /^(hi|hello|hey)[\s,!.]*$/i.test(text);
+    if (isGreeting) {
+      return {
+        inScope: true,
+        wantsRecommendation: false,
+        reply:
+          "Hi! I'm Afflatus AI Match. Tell me who you need — for example: \"I need a cinematographer in Mumbai for a horror short\" — and I'll find people for you.",
+      };
+    }
+
+    // Explicit find/crew intent
+    const findSignals = [
+      'find me', 'looking for', 'need a', 'need an', 'need someone', 'hire',
+      'search', 'recommend', 'who can', 'suggest', 'crew for', 'team for',
+    ];
+    const roleSignals = [
+      'cinematograph', 'director', 'editor', 'producer', 'gaffer', 'sound',
+      'camera', 'writer', 'screenwriter', 'colorist', 'vfx', 'actor', 'photographer',
+      'dp', '1st ac', 'boom', 'composer', 'designer',
+    ];
+    const wantsRec =
+      findSignals.some((k) => text.includes(k)) ||
+      (roleSignals.some((k) => text.includes(k)) &&
+        (text.includes('in ') || text.includes('for ') || text.includes('mumbai') || text.includes('delhi') || text.length > 25));
+
+    const allowProduct = [
+      'afflatus', 'collaborat', 'profile', 'project', 'post', 'proposal', 'connect',
+      'how do i', 'how does', 'explore', 'portfolio', 'feedback', 'travel',
+    ];
+    if (allowProduct.some((k) => text.includes(k)) && !wantsRec) {
+      return {
+        inScope: true,
+        wantsRecommendation: false,
+        reply:
+          "I can help with Afflatus discovery and collaboration. Describe a role and city (e.g. \"editor in Bengaluru\") when you want matches.",
+      };
+    }
+    if (wantsRec) {
+      return { inScope: true, wantsRecommendation: true };
+    }
+
+    // Follow-up only if prior turn was already a search (assistant had results context)
+    const priorAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    if (
+      priorAssistant &&
+      messages.filter((m) => m.role === 'user').length > 1 &&
+      text.length < 100 &&
+      (text.includes('only ') || text.includes('also ') || text.includes('in ') || text.includes('more'))
+    ) {
+      return { inScope: true, wantsRecommendation: true };
+    }
+
+    if (!process.env.GEMINI_API_KEY) {
+      return {
+        inScope: false,
+        wantsRecommendation: false,
+        reply:
+          "I'm Afflatus AI Match — ask for a role and location to find collaborators, or ask how Afflatus works.",
+      };
+    }
+    try {
+      const { text: raw } = await generateContentWithFallback(
+        {
+          contents: `For Afflatus (film/creator collaboration app). Message: """${lastUser}"""
+Reply JSON only: {"inScope": true|false, "wantsRecommendation": true|false}
+wantsRecommendation=true only if user is asking to FIND/MATCH people (roles, crew, collaborators).
+Greetings and general chat: inScope true, wantsRecommendation false.
+Unrelated topics (homework, recipes, physics): inScope false.`,
+          temperature: 0,
+          responseMimeType: 'application/json',
+          useThinkingBudget: false,
+        },
+        '[QueryUnderstanding/classify]'
+      );
+      const parsed = JSON.parse(raw || '{}');
+      if (parsed.inScope === false) {
+        return {
+          inScope: false,
+          wantsRecommendation: false,
+          reply:
+            "I'm focused on Afflatus — discovery and collaboration. Ask me to find a creator or how the platform works.",
+        };
+      }
+      return {
+        inScope: true,
+        wantsRecommendation: !!parsed.wantsRecommendation,
+        reply: parsed.wantsRecommendation
+          ? undefined
+          : "Tell me a role and place when you want matches — e.g. \"cinematographer in Mumbai\".",
+      };
+    } catch {
+      return {
+        inScope: true,
+        wantsRecommendation: false,
+        reply: "Tell me who you're looking for (role + city) and I'll search the network.",
+      };
+    }
+  }
+
   static async understandChat(messages: { role: 'user' | 'assistant'; content: string }[]): Promise<{ success: boolean; data?: any; error?: string }> {
-    const ai = getGeminiClient();
-    if (!ai) {
+    if (!process.env.GEMINI_API_KEY) {
       return { success: false, error: 'GEMINI_API_KEY not configured' };
     }
 
@@ -34,6 +136,8 @@ export class QueryUnderstandingService {
         },
         project_type: { type: Type.STRING },
         role: { type: Type.STRING },
+        roles: { type: Type.ARRAY, items: { type: Type.STRING } },
+        genres: { type: Type.ARRAY, items: { type: Type.STRING } },
         minExperienceYears: { type: Type.NUMBER, nullable: true },
         preferences: {
           type: Type.OBJECT,
@@ -98,47 +202,27 @@ Examples:
 - "director" (when meaning film director) -> "Director"
 - "editor" or "video editor" -> "Lead Video Editor"
 - "sound guy" or "sound person" -> "Sound Designer / Audio Recordist"
-If the user mentions multiple roles, pick the PRIMARY one they are looking for.`;
+If the user mentions multiple roles, put ALL of them in the "roles" array (each mapped to an EXACT platform role string above).
+Also set "role" to the first/primary requested role for backward compatibility.
+Extract genres when mentioned (horror, thriller, comedy, etc.) into the genres array.
+Never drop a requested role — always include every distinct role the user asked for in "roles".`;
 
     const formattedHistory = messages.map(m => `${m.role === 'user' ? 'User' : 'System'}: "${m.content}"`).join('\n');
     const prompt = `Chat History:\n${formattedHistory}\n\nBased on the ENTIRE conversation history above, extract the FINAL combined structured requirements that reflect the user's current intent.`;
 
     try {
-      // Try multiple models in order — fallback if one is overloaded (503)
-      const models = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-3.6-flash'];
-      let lastError: any = null;
-
-      for (const model of models) {
-        try {
-          console.log(`[QueryUnderstanding] Trying model: ${model}`);
-          const response = await ai.models.generateContent({
-            model,
-            contents: prompt,
-            config: {
-              systemInstruction,
-              responseMimeType: 'application/json',
-              responseSchema: schema,
-              temperature: 0.3,
-              thinkingConfig: { thinkingBudget: 0 },
-            },
-          });
-
-          const text = response?.text || (response as any)?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-          if (text) {
-            console.log(`[QueryUnderstanding] Success with model: ${model}`);
-            return { success: true, data: JSON.parse(text) };
-          }
-        } catch (modelErr: any) {
-          console.warn(`[QueryUnderstanding] ${model} failed:`, modelErr?.status || modelErr?.message);
-          lastError = modelErr;
-          // If it's a 503 (overloaded) or 429 (rate limit), try the next model
-          if (modelErr?.status === 503 || modelErr?.status === 429) continue;
-          // For other errors (400, 404), also try next model
-          continue;
-        }
-      }
-
-      return { success: false, error: lastError?.message || 'All models failed' };
+      const { text } = await generateContentWithFallback(
+        {
+          contents: prompt,
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          temperature: 0.3,
+          useThinkingBudget: true,
+        },
+        '[QueryUnderstanding]'
+      );
+      return { success: true, data: JSON.parse(text) };
     } catch (err: any) {
       console.error('[QueryUnderstanding] Error:', err);
       return { success: false, error: err.message || 'Failed to understand query' };

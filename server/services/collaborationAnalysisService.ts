@@ -1,19 +1,5 @@
-import { GoogleGenAI, Type } from '@google/genai';
-
-let aiClient: GoogleGenAI | null = null;
-function getGeminiClient(): GoogleGenAI | null {
-  if (!aiClient && process.env.GEMINI_API_KEY) {
-    try {
-      aiClient = new GoogleGenAI({
-        apiKey: process.env.GEMINI_API_KEY,
-        httpOptions: { headers: { 'User-Agent': 'afflatus-engine-v1' } },
-      });
-    } catch (err) {
-      console.warn('[CollaborationAnalysis] Failed to init Gemini:', err);
-    }
-  }
-  return aiClient;
-}
+import { Type } from '@google/genai';
+import { generateContentWithFallback } from './geminiClient';
 
 export interface CollaborationProfileResult {
   creativity: number;
@@ -28,9 +14,10 @@ export interface CollaborationProfileResult {
 }
 
 export class CollaborationAnalysisService {
-  static async analyzeAnswers(answers: Record<string, string>): Promise<{ success: boolean; data?: CollaborationProfileResult; error?: string }> {
-    const ai = getGeminiClient();
-    if (!ai) {
+  static async analyzeAnswers(
+    answers: Record<string, string>
+  ): Promise<{ success: boolean; data?: CollaborationProfileResult; error?: string }> {
+    if (!process.env.GEMINI_API_KEY) {
       return { success: false, error: 'GEMINI_API_KEY not configured' };
     }
 
@@ -82,49 +69,34 @@ ${JSON.stringify(answers, null, 2)}
 Analyze these answers and return the structured scores.`;
 
     try {
-      const models = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-3.6-flash'];
-      let lastError: any = null;
-
-      for (const model of models) {
-        try {
-          console.log(`[CollaborationAnalysis] Trying model: ${model}`);
-          const response = await ai.models.generateContent({
-            model,
-            contents: prompt,
-            config: {
-              systemInstruction,
-              responseMimeType: 'application/json',
-              responseSchema: schema,
-              temperature: 0.3,
-              thinkingConfig: { thinkingBudget: 0 },
-            },
-          });
-
-          const text = response?.text || (response as any)?.candidates?.[0]?.content?.parts?.[0]?.text || null;
-          if (text) {
-            console.log(`[CollaborationAnalysis] Success with model: ${model}`);
-            const parsed = JSON.parse(text);
-            if (parsed.collaborationProfile) {
-              return { 
-                success: true, 
-                data: {
-                  ...parsed.collaborationProfile,
-                  confidenceScores: parsed.confidenceScores || {}
-                }
-              };
-            }
-          }
-        } catch (modelErr: any) {
-          console.warn(`[CollaborationAnalysis] ${model} failed:`, modelErr?.status || modelErr?.message);
-          lastError = modelErr;
-          continue;
-        }
+      const { text } = await generateContentWithFallback(
+        {
+          contents: prompt,
+          systemInstruction,
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          temperature: 0.3,
+          useThinkingBudget: true,
+        },
+        '[CollaborationAnalysis]'
+      );
+      const parsed = JSON.parse(text);
+      if (parsed.collaborationProfile) {
+        return {
+          success: true,
+          data: {
+            ...parsed.collaborationProfile,
+            confidenceScores: parsed.confidenceScores || {},
+          },
+        };
       }
-
-      return { success: false, error: lastError?.message || 'All models failed' };
+      return { success: false, error: 'Malformed collaboration analysis response' };
     } catch (err: any) {
       console.error('[CollaborationAnalysis] Error:', err);
-      return { success: false, error: err.message || 'Failed to analyze collaboration profile' };
+      return {
+        success: false,
+        error: err.message || 'Failed to analyze collaboration profile',
+      };
     }
   }
 }

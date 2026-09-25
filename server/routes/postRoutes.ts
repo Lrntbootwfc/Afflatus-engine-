@@ -26,7 +26,14 @@ postRoutes.post('/posts', async (req, res) => {
     };
 
     const docRef = await db.collection('posts').add(postDoc);
-    
+    try {
+      await db.collection('users').doc(authorId).set(
+        { postsCount: FieldValue.increment(1), updatedAt: FieldValue.serverTimestamp() },
+        { merge: true }
+      );
+    } catch (e) {
+      console.warn('[posts] postsCount increment failed', e);
+    }
     return res.status(201).json({ success: true, post: { id: docRef.id, ...postDoc } });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Server error' });
@@ -54,14 +61,60 @@ postRoutes.get('/posts/user/:userId', async (req, res) => {
   try {
     const db = getAdminDb();
     const { userId } = req.params;
-    
-    const snapshot = await db.collection('posts')
-      .where('authorId', '==', userId)
-      .orderBy('createdAt', 'desc')
-      .get();
-      
-    const posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    let posts: any[] = [];
+    try {
+      const snapshot = await db.collection('posts')
+        .where('authorId', '==', userId)
+        .orderBy('createdAt', 'desc')
+        .get();
+      posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    } catch (indexErr: any) {
+      // Missing composite index — fallback
+      const snapshot = await db.collection('posts').where('authorId', '==', userId).get();
+      posts = snapshot.docs
+        .map((doc: any) => ({ id: doc.id, ...doc.data() }))
+        .sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    }
     return res.json({ posts });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+// 3b. GET /api/posts/:postId — single post (deep links / share)
+postRoutes.get('/posts/:postId', async (req, res) => {
+  try {
+    const db = getAdminDb();
+    const { postId } = req.params;
+    const snap = await db.collection('posts').doc(postId).get();
+    if (!snap.exists) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    return res.json({ post: { id: snap.id, ...snap.data() } });
+  } catch (error: any) {
+    return res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+
+// 3c. PUT /api/posts/:postId — owner edit caption (and optional imageUrl)
+postRoutes.put('/posts/:postId', async (req, res) => {
+  try {
+    const db = getAdminDb();
+    const { postId } = req.params;
+    const { userId, caption, imageUrl } = req.body || {};
+    if (!userId) return res.status(401).json({ error: 'User ID is required' });
+    const ref = db.collection('posts').doc(postId);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Post not found' });
+    const data = snap.data() || {};
+    if (data.authorId !== userId) return res.status(403).json({ error: 'Only the author can edit this post' });
+    const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
+    if (typeof caption === 'string') update.caption = caption.slice(0, 5000);
+    if (typeof imageUrl === 'string') update.imageUrl = imageUrl;
+    await ref.update(update);
+    const next = await ref.get();
+    return res.json({ success: true, post: { id: next.id, ...next.data() } });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Server error' });
   }
@@ -105,9 +158,29 @@ postRoutes.delete('/posts/:postId', async (req, res) => {
   try {
     const db = getAdminDb();
     const { postId } = req.params;
+    const userId =
+      (typeof req.headers['x-user-id'] === 'string' && req.headers['x-user-id']) ||
+      (typeof req.body?.userId === 'string' && req.body.userId) ||
+      '';
 
-    await db.collection('posts').doc(postId).delete();
-    
+    const ref = db.collection('posts').doc(postId);
+    const snap = await ref.get();
+    if (!snap.exists) return res.status(404).json({ error: 'Post not found' });
+    const data = snap.data() || {};
+    if (userId && data.authorId && data.authorId !== userId) {
+      return res.status(403).json({ error: 'Only the author can delete this post' });
+    }
+    await ref.delete();
+    if (data.authorId) {
+      try {
+        await db.collection('users').doc(data.authorId).set(
+          { postsCount: FieldValue.increment(-1), updatedAt: FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      } catch (e) {
+        console.warn('[posts] postsCount decrement failed', e);
+      }
+    }
     return res.json({ success: true });
   } catch (error: any) {
     return res.status(500).json({ error: error.message || 'Server error' });

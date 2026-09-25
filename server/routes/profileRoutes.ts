@@ -1,10 +1,9 @@
 import { Router } from 'express';
 import { ProfileService } from '../services/profileService';
-import { RecommendationService } from '../services/recommendationService';
-import { CollaborationAnalysisService } from '../services/collaborationAnalysisService';
 import { PROFESSIONS, GENRES } from '../constants/professions';
 import { getOnboardingForProfessions, PROFESSION_ONBOARDING } from '../constants/onboarding';
 import { seedDemoCreators, isFirestoreEnabled } from '../services/dataStore';
+import { CollaborationAnalysisService } from '../services/collaborationAnalysisService';
 
 export const profileRoutes = Router();
 
@@ -68,23 +67,6 @@ profileRoutes.post('/admin/seed-demo-creators', async (_req, res) => {
   }
 });
 
-profileRoutes.post('/profiles/analyze-collaboration', async (req, res) => {
-  const userId = resolveUserId(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-
-  const { answers } = req.body;
-  if (!answers || typeof answers !== 'object') {
-    return res.status(400).json({ error: 'answers object required' });
-  }
-
-  const result = await CollaborationAnalysisService.analyzeAnswers(answers);
-  if (!result.success) {
-    return res.status(502).json({ error: result.error });
-  }
-
-  res.json({ collaborationProfile: result.data });
-});
-
 profileRoutes.get('/admin/data-mode', (_req, res) => {
   res.json({
     mode: isFirestoreEnabled() ? 'firestore' : 'memory',
@@ -92,6 +74,24 @@ profileRoutes.get('/admin/data-mode', (_req, res) => {
       ? 'Using real Firestore'
       : 'Set FIREBASE_SERVICE_ACCOUNT_JSON to use Firestore',
   });
+});
+
+
+profileRoutes.post('/profiles/analyze-collaboration', async (req, res) => {
+  const { answers } = req.body || {};
+  if (!answers || typeof answers !== 'object') {
+    return res.status(400).json({ error: 'answers object required' });
+  }
+  try {
+    const result = await CollaborationAnalysisService.analyzeAnswers(answers);
+    if (!result.success) {
+      return res.status(502).json({ error: result.error || 'Analysis failed' });
+    }
+    res.json({ collaborationProfile: result.data });
+  } catch (err: any) {
+    console.error('[analyze-collaboration]', err);
+    res.status(500).json({ error: err?.message || 'Analysis failed' });
+  }
 });
 
 // Users

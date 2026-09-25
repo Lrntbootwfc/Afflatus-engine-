@@ -47,6 +47,18 @@ export interface WorkLink {
   thumbnailUrl?: string;
 }
 
+export interface Post {
+  id: string;
+  authorId: string;
+  authorName: string;
+  authorRole: string;
+  authorAvatar?: string;
+  caption: string;
+  imageUrl?: string;
+  likes: string[];
+  createdAt: number;
+}
+
 export interface SocialLinks {
   linkedin?: string;
   instagram?: string;
@@ -66,7 +78,23 @@ export interface CreatorProfile {
   bio?: string;
   primaryRole: string;
   secondaryRoles: string[];
-  seekingRoles: string[]; // Roles user is looking for (e.g., ["Sound Designer", "Video Editor"])
+  /** @deprecated User needs are now handled conversationally via AI Match */
+  seekingRoles?: string[];
+  /** Roles the user offers (multi). primaryRole remains first/primary for compatibility. */
+  rolesOffered?: string[];
+  /**
+   * Travel preference for matching:
+   * remote_only | within_city | nearby_cities | nearby_metro | nearby_states | anywhere
+   */
+  travelPreference?: string;
+  /** Raw onboarding scenario answers (behaviour input for recommendations) */
+  collaborationScenarios?: {
+    q1?: string;
+    q2?: string;
+    q3?: string;
+    q4?: string;
+    q5?: string;
+  };
   location: string;
   travelRadiusMiles: number;
   dayRateUsd: number;
@@ -98,6 +126,7 @@ export interface CreatorProfile {
     feedback_openness: number;
     leadership: number;
     technical_proficiency: number;
+    feedbackCount?: number;
     confidenceScores?: Record<string, number>;
   };
   specialtyTags?: string[];
@@ -115,6 +144,7 @@ export interface CreatorProfile {
   preferredChannel?: 'WhatsApp' | 'Slack' | 'Email' | 'Phone';
   emergencyContact?: string;
   nextAvailabilityDate?: string;
+  collaborationCount?: number;
 }
 
 export interface RoleRequirement {

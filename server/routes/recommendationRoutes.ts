@@ -40,25 +40,106 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
       return;
     }
 
+    const scope = await QueryUnderstandingService.classifyAfflatusIntent(messages);
+    if (!scope.inScope) {
+      res.json({
+        success: true,
+        outOfScope: true,
+        message: scope.reply,
+        understanding: null,
+        candidates: [],
+        relaxed: [],
+      });
+      return;
+    }
+
+    // Conversational / product help — no ranking
+    if (scope.wantsRecommendation === false) {
+      res.json({
+        success: true,
+        conversational: true,
+        message: scope.reply || "Tell me a role and city when you want creator matches.",
+        understanding: null,
+        candidates: [],
+        relaxed: [],
+      });
+      return;
+    }
+
     const understood = await QueryUnderstandingService.understandChat(messages);
     if (!understood.success || !understood.data) {
-      res.status(500).json({ error: understood.error || 'Failed to understand query' });
+      console.error('[ai-match] understand failed:', understood.error);
+      res.status(503).json({
+        success: false,
+        error: understood.error || 'Failed to understand query',
+        message:
+          'AI Match could not reach a working Gemini model. Check GEMINI_API_KEY and that your project can use gemini-3.8-flash (or another model in the engine ladder).',
+      });
       return;
     }
 
     const data = understood.data;
     const requesterId = typeof req.headers['x-user-id'] === 'string' ? req.headers['x-user-id'] : undefined;
+    // Ensure roles[] for multi-role ranking
+    if ((!data.roles || !Array.isArray(data.roles) || !data.roles.length) && data.role && data.role !== 'not_specified') {
+      data.roles = [data.role];
+    }
+
+    // Location resolution (session > extracted > profile default). Never silent.
+    const bodyLoc =
+      (typeof req.body?.sessionLocation === 'string' && req.body.sessionLocation.trim()) ||
+      (typeof req.body?.defaultLocation === 'string' && req.body.defaultLocation.trim()) ||
+      '';
+    let locationSource: 'explicit' | 'session' | 'profile' | 'none' = 'none';
+    const extractedCity =
+      data.location && typeof data.location === 'object' && data.location.city && data.location.city !== 'not_specified'
+        ? String(data.location.city).trim()
+        : '';
+
+    if (extractedCity) {
+      locationSource = 'explicit';
+    } else if (typeof req.body?.sessionLocation === 'string' && req.body.sessionLocation.trim()) {
+      data.location = { city: req.body.sessionLocation.trim() };
+      locationSource = 'session';
+    } else if (bodyLoc) {
+      data.location = { city: bodyLoc };
+      locationSource = 'profile';
+    }
+
+    // If Gemini left roles empty but user clearly asked for a role word, keep failure honest
     const searchResult = await RecommendationService.searchFromRequirements(data, requesterId);
+
+    console.log('[REC_DEBUG]', JSON.stringify({
+      roles: data.roles || data.role,
+      city: data.location?.city || null,
+      locationSource,
+      relaxed: searchResult.relaxed,
+      count: searchResult.results?.length,
+      top: (searchResult.results || []).slice(0, 5).map((c: any) => ({
+        id: c.creatorId,
+        score: c.score,
+        parts: c.scoreBreakdown,
+      })),
+    }));
+
+    const activeCity =
+      data.location && typeof data.location === 'object' && data.location.city && data.location.city !== 'not_specified'
+        ? data.location.city
+        : null;
 
     res.json({
       success: true,
       understanding: data,
       understandingSource: 'engine-gemini',
-      candidates: searchResult.results.map(c => ({
+      locationSource,
+      activeLocation: activeCity,
+      relaxed: searchResult.relaxed || [],
+      candidates: (searchResult.results || []).map((c: any) => ({
         userId: c.creatorId,
         score: c.score,
         matchReasons: c.reasons,
-        profile: c.profile
+        scoreBreakdown: c.scoreBreakdown,
+        profile: c.profile,
       })),
     });
   } catch (err: any) {
