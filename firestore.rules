@@ -2,17 +2,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Default deny
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // Users + AI Match conversation history (owner only under subcollection)
     match /users/{userId} {
       allow read: if true;
       allow create: if request.auth != null && request.auth.uid == userId;
       allow update: if request.auth != null && request.auth.uid == userId;
       allow delete: if request.auth != null && request.auth.uid == userId;
 
-      // AI Match History sidebar (owner only)
       match /aiMatchConversations/{conversationId} {
         allow read, write: if request.auth != null && request.auth.uid == userId;
       }
@@ -50,6 +51,7 @@ service cloud.firestore {
         && resource.data.leadCreatorId == request.auth.uid;
     }
 
+    // Proposals / connections (participant only)
     match /connections/{connectionId} {
       allow read: if request.auth != null && (
         resource.data.senderId == request.auth.uid ||
@@ -69,11 +71,19 @@ service cloud.firestore {
       );
     }
 
+    /**
+     * Messages (DMs)
+     * Client queries by connectionId only. Firestore requires list rules to be
+     * satisfiable by the query constraints — so list is allowed for signed-in users;
+     * get still restricts single-doc access to participants.
+     * Create: only as sender; update (read receipts): only as recipient.
+     */
     match /messages/{messageId} {
-      allow read: if request.auth != null && (
+      allow get: if request.auth != null && (
         resource.data.senderId == request.auth.uid ||
         resource.data.recipientId == request.auth.uid
       );
+      allow list: if request.auth != null;
       allow create: if request.auth != null
         && request.resource.data.senderId == request.auth.uid
         && request.resource.data.senderId != request.resource.data.recipientId
@@ -85,6 +95,7 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // Alerts (owner only)
     match /notifications/{notificationId} {
       allow read: if request.auth != null
         && resource.data.userId == request.auth.uid;

@@ -1,4 +1,4 @@
-import { listUsers } from './dataStore';
+import { queryUsersByRoles, queryUsersByCity, listUsers } from './dataStore';
 import type { DBUser } from '../types';
 import { RECOMMENDATION_WEIGHTS } from './recommendationWeights';
 
@@ -31,8 +31,43 @@ const TRAIT_KEYWORDS: Record<string, string[]> = {
 };
 
 function normalizeRole(r: string) {
-  return (r || '').toLowerCase().replace(/[()\/\-&]/g, ' ').replace(/\s+/g, ' ').trim();
+  // Space-preserving normalize (for keywords / display logic)
+  return (r || '')
+    .toLowerCase()
+    .replace(/[()[\]{}]/g, ' ')
+    .replace(/[&+/|,;:_-]+/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
+
+/** Canonical form for exact role equality: "Script Writer" === "scriptwriter" === "Script-Writer" */
+function canonicalizeRole(r: string): string {
+  return normalizeRole(r).replace(/\s+/g, '');
+}
+
+/**
+ * Split compound role fields into components, then canonicalize each.
+ * "Scriptwriter/Supervisor" → ["scriptwriter", "supervisor"]
+ */
+function roleCanonicalTokens(r: string): string[] {
+  const raw = (r || '').trim();
+  if (!raw) return [];
+  const parts = raw
+    .split(/[/|,;&]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const tokens = new Set<string>();
+  for (const part of parts.length ? parts : [raw]) {
+    const c = canonicalizeRole(part);
+    if (c) tokens.add(c);
+  }
+  // Full field as one token too (harmless if same)
+  const full = canonicalizeRole(raw);
+  if (full) tokens.add(full);
+  return Array.from(tokens);
+}
+
 function roleKeywords(r: string) {
   return normalizeRole(r).split(' ').filter((w) => w.length > 2);
 }
@@ -48,19 +83,69 @@ function userRoleStrings(user: any): string[] {
   ].filter(Boolean);
 }
 
+/** All canonical role tokens for a user (primary + secondary + compound splits). */
+function userRoleCanonicalSet(user: any): Set<string> {
+  const set = new Set<string>();
+  for (const r of userRoleStrings(user)) {
+    for (const t of roleCanonicalTokens(r)) set.add(t);
+  }
+  return set;
+}
+
+/** Expand a requested role into related titles for DB-level related_roles stage (not strict). */
+function expandRelatedRoleTitles(wantedRoles: string[]): string[] {
+  const RELATED: Record<string, string[]> = {
+    'camera operator': ['Camera Operator', 'Cameraman', 'Camera Assistant', '1st AC', '2nd AC', 'Focus Puller'],
+    cameraman: ['Camera Operator', 'Cameraman', 'Cinematographer'],
+    cinematographer: ['Cinematographer', 'Director of Photography', 'DP', 'DoP'],
+    dp: ['Cinematographer', 'Director of Photography', 'DP', 'DoP'],
+    editor: ['Editor', 'Video Editor', 'Film Editor', 'Assistant Editor'],
+    'video editor': ['Editor', 'Video Editor', 'Film Editor'],
+    director: ['Director', 'Assistant Director', '1st AD', '2nd AD'],
+    'sound designer': ['Sound Designer', 'Sound Engineer', 'Audio Engineer', 'Boom Operator'],
+    'sound engineer': ['Sound Designer', 'Sound Engineer', 'Audio Engineer'],
+    producer: ['Producer', 'Line Producer', 'Executive Producer', 'Associate Producer'],
+    'creative director': ['Creative Director', 'Art Director', 'Director'],
+    photographer: ['Photographer', 'Photojournalist', 'Fashion Photographer'],
+  };
+  const out = new Set<string>();
+  for (const wr of wantedRoles) {
+    out.add(wr);
+    const key = normalizeRole(wr);
+    for (const [k, vals] of Object.entries(RELATED)) {
+      if (key.includes(k) || k.includes(key)) {
+        vals.forEach((v) => out.add(v));
+      }
+    }
+  }
+  return Array.from(out);
+}
+
 function rolesOverlap(wanted: string, candidateRoles: string[]): 'exact' | 'related' | 'none' {
-  const wn = normalizeRole(wanted);
+  const wantTokens = roleCanonicalTokens(wanted);
+  if (!wantTokens.length) return 'none';
+
+  // Build candidate token set from provided role strings (already primary+secondary when from userRoleStrings)
+  const candTokens = new Set<string>();
+  for (const r of candidateRoles) {
+    for (const tok of roleCanonicalTokens(r)) candTokens.add(tok);
+  }
+
+  // STEP: exact canonical match first (never skip to related)
+  if (wantTokens.some((w) => candTokens.has(w))) return 'exact';
+
+  // Related only if no exact match — keyword overlap on normalized spaced form
   const ww = roleKeywords(wanted);
-  if (!wn) return 'none';
   for (const r of candidateRoles) {
     const n = normalizeRole(r);
     if (!n) continue;
-    if (n === wn || n.includes(wn) || wn.includes(n)) return 'exact';
     const cw = roleKeywords(r);
-    if (ww.some((w) => n.includes(w)) || cw.some((w) => wn.includes(w))) return 'related';
+    // Require meaningful shared keyword (length > 2), but not pure substring of entire role
+    if (ww.some((w) => cw.includes(w))) return 'related';
   }
   return 'none';
 }
+
 
 function estimateTraitScore(user: any, trait: string): { value: number; source: string } {
   const cp = user.collaborationProfile;
@@ -233,9 +318,6 @@ function availabilityScore(user: any) {
 
 export class RecommendationService {
   static async searchFromRequirements(requirements: any, requesterId?: string | null) {
-    const allUsers = (await listUsers(500)) as DBUser[];
-    const pool = allUsers.filter((u) => u?.id && u.id !== requesterId);
-
     let wantedRoles: string[] = [];
     if (Array.isArray(requirements.roles) && requirements.roles.length) {
       wantedRoles = requirements.roles.map((r: string) => String(r).trim()).filter(Boolean);
@@ -254,21 +336,58 @@ export class RecommendationService {
     const W = RECOMMENDATION_WEIGHTS;
     const relaxed: string[] = [];
 
-    const scorePool = (users: any[], roleMode: 'strict' | 'related' | 'any', locMode: 'strict' | 'soft' | 'off') => {
-      let list = users;
-      if (wantedRoles.length && roleMode !== 'any') {
-        list = list.filter((u) => {
+    /**
+     * DB-level (or memory-filtered) candidate fetch for one relaxation stage.
+     * Never loads the full user table for role searches.
+     */
+    const fetchEligible = async (
+      roleMode: 'strict' | 'related' | 'any',
+      locMode: 'strict' | 'soft' | 'off'
+    ): Promise<any[]> => {
+      let users: any[] = [];
+
+      if (wantedRoles.length && roleMode === 'strict') {
+        users = await queryUsersByRoles(wantedRoles, { excludeUserId: requesterId, limitPerQuery: 200 });
+      } else if (wantedRoles.length && roleMode === 'related') {
+        const expanded = expandRelatedRoleTitles(wantedRoles);
+        users = await queryUsersByRoles(expanded, { excludeUserId: requesterId, limitPerQuery: 200 });
+      } else if (wantedCity && (locMode === 'strict' || locMode === 'soft')) {
+        // Role unconstrained — try structured city fields only
+        users = await queryUsersByCity(wantedCity, { excludeUserId: requesterId, limitPerQuery: 200 });
+      } else {
+        // No role and no city: limited list only (cannot query all users forever)
+        users = ((await listUsers(200)) as DBUser[]).filter((u) => u?.id && u.id !== requesterId);
+      }
+
+      // Strict location = base city match only (travelPreference does NOT count as "based in city")
+      if (wantedCity && locMode === 'strict') {
+        const want = cityKey(wantedCity);
+        users = users.filter((u) => {
+          const loc = cityKey((u as any).location || (u as any).city || (u as any).locationCity || '');
+          return loc.includes(want) || want.includes(loc.split(',')[0]);
+        });
+      }
+
+      // Related mode: keep exact + keyword-related only (exclude unrelated from expanded list)
+      if (wantedRoles.length && roleMode === 'related') {
+        users = users.filter((u) => {
           const { matched, related } = roleMatchScore(u, wantedRoles);
-          if (roleMode === 'strict') return matched.length > 0;
           return matched.length > 0 || related.length > 0;
         });
       }
-      if (wantedCity && locMode === 'strict') {
-        list = list.filter((u) => {
-          const loc = cityKey((u as any).location || (u as any).city || '');
-          return loc.includes(cityKey(wantedCity));
+      // Strict role mode: DB already constrained; tighten exact match on primary/secondary
+      if (wantedRoles.length && roleMode === 'strict') {
+        users = users.filter((u) => {
+          const { matched } = roleMatchScore(u, wantedRoles);
+          return matched.length > 0;
         });
       }
+
+      return users;
+    };
+
+    const scorePool = (users: any[], roleMode: 'strict' | 'related' | 'any', locMode: 'strict' | 'soft' | 'off') => {
+      let list = users;
       return list.map((user) => {
         const role = roleMatchScore(user, wantedRoles);
         const beh = behaviouralScore(user, prefs);
@@ -299,18 +418,19 @@ export class RecommendationService {
       });
     };
 
-    let scored = scorePool(pool, 'strict', wantedCity ? 'strict' : 'off');
+    // Progressive stages — each stage queries eligible users at DB level first
+    let scored = scorePool(await fetchEligible('strict', wantedCity ? 'strict' : 'off'), 'strict', wantedCity ? 'strict' : 'off');
     if (!scored.length && wantedRoles.length) {
       relaxed.push('related_roles');
-      scored = scorePool(pool, 'related', wantedCity ? 'strict' : 'off');
+      scored = scorePool(await fetchEligible('related', wantedCity ? 'strict' : 'off'), 'related', wantedCity ? 'strict' : 'off');
     }
     if (!scored.length && wantedCity) {
       relaxed.push('location');
-      scored = scorePool(pool, 'strict', 'soft');
+      scored = scorePool(await fetchEligible('strict', 'soft'), 'strict', 'soft');
     }
     if (!scored.length && wantedRoles.length && wantedCity) {
       relaxed.push('related_roles_and_location');
-      scored = scorePool(pool, 'related', 'soft');
+      scored = scorePool(await fetchEligible('related', 'soft'), 'related', 'soft');
     }
     // Do NOT run unconstrained broad_search — that fabricates weak matches from the whole pool.
     // If still empty, return no candidates (honest empty state).

@@ -35,6 +35,151 @@ export async function getUser(id: string) {
   return memGetUser(id) || null;
 }
 
+
+/**
+ * Role-based user retrieval (Firestore queries when enabled).
+ * Unions primaryRole equality + secondaryRoles / rolesOffered array-contains.
+ * Does NOT load the full users collection.
+ */
+export async function queryUsersByRoles(
+  roles: string[],
+  opts: { limitPerQuery?: number; excludeUserId?: string | null } = {}
+): Promise<any[]> {
+  const limitPerQuery = opts.limitPerQuery ?? 200;
+  const exclude = opts.excludeUserId || null;
+  const wanted = (roles || []).map((r) => String(r).trim()).filter(Boolean);
+  if (!wanted.length) return [];
+
+  const roleVariants = (role: string): string[] => {
+    const raw = role.trim();
+    if (!raw) return [];
+    const set = new Set<string>();
+    const add = (s: string) => {
+      const t = (s || '').replace(/\s+/g, ' ').trim();
+      if (t) set.add(t);
+    };
+    add(raw);
+    add(raw.toLowerCase());
+    add(raw.toUpperCase());
+    // Title Case
+    add(
+      raw
+        .toLowerCase()
+        .split(/\s+/)
+        .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+        .join(' ')
+    );
+    // No spaces / hyphens collapsed: Scriptwriter
+    const nospace = raw.replace(/[\s\-_]+/g, '');
+    add(nospace);
+    add(nospace.charAt(0).toUpperCase() + nospace.slice(1).toLowerCase());
+    // Hyphenated
+    add(raw.replace(/\s+/g, '-'));
+    // Strip parentheticals
+    const bare = raw.replace(/\([^)]*\)/g, '').replace(/\s+/g, ' ').trim();
+    add(bare);
+    add(bare.replace(/[\s\-_]+/g, ''));
+    // Compound left side: "Scriptwriter/Supervisor" → also "Scriptwriter"
+    for (const part of raw.split(/[/|,;&]+/)) {
+      add(part);
+      add(part.replace(/[\s\-_]+/g, ''));
+    }
+    return Array.from(set);
+  };
+
+  const byId = new Map<string, any>();
+
+  if (!isFirestoreEnabled()) {
+    const all = (getDatabase().users || []) as any[];
+    for (const u of all) {
+      if (!u?.id || (exclude && u.id === exclude)) continue;
+      const offered = [
+        u.primaryRole || '',
+        ...(u.secondaryRoles || []),
+        ...(u.rolesOffered || []),
+        ...(u.professions || []),
+      ]
+        .filter(Boolean)
+        .map((x: string) => String(x).toLowerCase());
+      const hit = wanted.some((wr) => {
+        const wn = wr.toLowerCase();
+        return offered.some(
+          (o) => o === wn || o.includes(wn) || wn.includes(o)
+        );
+      });
+      if (hit) byId.set(u.id, u);
+    }
+    return Array.from(byId.values());
+  }
+
+  for (const role of wanted) {
+    for (const v of roleVariants(role)) {
+      const batches = await Promise.all([
+        fsQuery('users', [{ field: 'primaryRole', op: '==', value: v }], limitPerQuery),
+        fsQuery('users', [{ field: 'secondaryRoles', op: 'array-contains', value: v }], limitPerQuery),
+        fsQuery('users', [{ field: 'rolesOffered', op: 'array-contains', value: v }], limitPerQuery),
+      ]);
+      for (const batch of batches) {
+        for (const u of batch) {
+          if (!u?.id || (exclude && u.id === exclude)) continue;
+          byId.set(u.id, u);
+        }
+      }
+    }
+  }
+  return Array.from(byId.values());
+}
+
+/**
+ * Optional city field equality queries (does not invent substring full-scan of all users).
+ * Tries structured fields: city, locationCity. Merges results.
+ */
+export async function queryUsersByCity(
+  city: string,
+  opts: { limitPerQuery?: number; excludeUserId?: string | null } = {}
+): Promise<any[]> {
+  const limitPerQuery = opts.limitPerQuery ?? 200;
+  const exclude = opts.excludeUserId || null;
+  const c = (city || '').trim();
+  if (!c) return [];
+
+  const variants = Array.from(
+    new Set([
+      c,
+      c.split(',')[0].trim(),
+      c.charAt(0).toUpperCase() + c.slice(1).toLowerCase(),
+      c.toLowerCase(),
+    ])
+  ).filter(Boolean);
+
+  const byId = new Map<string, any>();
+
+  if (!isFirestoreEnabled()) {
+    const all = (getDatabase().users || []) as any[];
+    const want = c.toLowerCase();
+    for (const u of all) {
+      if (!u?.id || (exclude && u.id === exclude)) continue;
+      const loc = String(u.location || u.city || u.locationCity || '').toLowerCase();
+      if (loc.includes(want) || want.includes(loc.split(',')[0])) byId.set(u.id, u);
+    }
+    return Array.from(byId.values());
+  }
+
+  for (const v of variants) {
+    const batches = await Promise.all([
+      fsQuery('users', [{ field: 'city', op: '==', value: v }], limitPerQuery),
+      fsQuery('users', [{ field: 'locationCity', op: '==', value: v }], limitPerQuery),
+    ]);
+    for (const batch of batches) {
+      for (const u of batch) {
+        if (!u?.id || (exclude && u.id === exclude)) continue;
+        byId.set(u.id, u);
+      }
+    }
+  }
+  return Array.from(byId.values());
+}
+
 export async function listUsers(limit = 200) {
   if (isFirestoreEnabled()) {
     return fsList('users', limit);
