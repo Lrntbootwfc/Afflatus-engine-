@@ -131,6 +131,19 @@ postRoutes.post('/posts/:postId/like', async (req, res) => {
       return res.status(401).json({ error: 'User ID is required' });
     }
 
+    // Incomplete profiles may browse but cannot Like
+    try {
+      const userSnap = await db.collection('users').doc(userId).get();
+      if (!userSnap.exists || userSnap.data()?.profileCompleted !== true) {
+        return res.status(403).json({
+          error: 'Complete your profile before liking posts.',
+          code: 'PROFILE_INCOMPLETE',
+        });
+      }
+    } catch (e) {
+      console.warn('[posts/like] profile check failed', e);
+    }
+
     const postRef = db.collection('posts').doc(postId);
     
     await db.runTransaction(async (t: any) => {

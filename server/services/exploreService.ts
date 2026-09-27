@@ -420,6 +420,14 @@ export class ExploreService {
     if (!recipient) {
       return { success: false, error: 'Recipient creator not found.' };
     }
+    // Collaboration requires completed profile (browse stays open without this)
+    if (sender && (sender as any).profileCompleted !== true) {
+      return {
+        success: false,
+        error: 'Complete your profile before collaborating or applying.',
+        code: 'PROFILE_INCOMPLETE',
+      };
+    }
 
     const defaultMsg = sender
       ? `Hi ${recipient.name}, I would love to collaborate on your project.`
