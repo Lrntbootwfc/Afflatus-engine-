@@ -44,15 +44,29 @@ postRoutes.post('/posts', async (req, res) => {
 postRoutes.get('/posts', async (req, res) => {
   try {
     const db = getAdminDb();
-    const snapshot = await db.collection('posts')
-      .orderBy('createdAt', 'desc')
-      .limit(50)
-      .get();
-      
-    const posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    let posts: any[] = [];
+    try {
+      const snapshot = await db.collection('posts')
+        .orderBy('createdAt', 'desc')
+        .limit(50)
+        .get();
+      posts = snapshot.docs.map((doc: any) => ({ id: doc.id, ...doc.data() }));
+    } catch (queryErr: any) {
+      // Missing index / field type mismatch — fallback scan + client sort
+      console.warn('[posts] orderBy feed failed, fallback:', queryErr?.message || queryErr);
+      const snapshot = await db.collection('posts').limit(80).get();
+      posts = snapshot.docs
+        .map((doc: any) => ({ id: doc.id, ...doc.data() }))
+        .sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))
+        .slice(0, 50);
+    }
     return res.json({ posts });
   } catch (error: any) {
-    return res.status(500).json({ error: error.message || 'Server error' });
+    console.error('[posts] GET /posts:', error?.message || error);
+    return res.status(500).json({
+      error: error.message || 'Server error',
+      posts: [],
+    });
   }
 });
 
