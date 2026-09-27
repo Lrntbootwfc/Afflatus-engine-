@@ -213,3 +213,122 @@ postRoutes.delete('/posts/:postId', async (req, res) => {
     return res.status(500).json({ error: error.message || 'Server error' });
   }
 });
+
+// 6. POST /api/collaborations/activate-count
+// Client cannot write another user's profile (Firestore rules: owner-only).
+// When both parties reach "collaborating", Admin increments collaborationCount on both.
+postRoutes.post('/collaborations/activate-count', async (req, res) => {
+  try {
+    const db = getAdminDb();
+    const actingUserId = await resolveUserIdAsync(req);
+    if (!actingUserId) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    const { connectionId } = req.body || {};
+    if (!connectionId || typeof connectionId !== 'string') {
+      return res.status(400).json({ error: 'connectionId required.' });
+    }
+
+    const connRef = db.collection('connections').doc(connectionId);
+    const connSnap = await connRef.get();
+    if (!connSnap.exists) {
+      return res.status(404).json({ error: 'Connection not found.' });
+    }
+    const data = connSnap.data() as any;
+    if (data.senderId !== actingUserId && data.recipientId !== actingUserId) {
+      return res.status(403).json({ error: 'Not a party to this connection.' });
+    }
+    if (data.status !== 'collaborating' && data.status !== 'completed') {
+      return res.status(400).json({
+        error: 'Connection is not in collaborating status yet.',
+        status: data.status,
+      });
+    }
+    if (data.collaborationCountApplied === true) {
+      return res.json({ success: true, alreadyApplied: true });
+    }
+
+    const batch = db.batch();
+    for (const uid of [data.senderId, data.recipientId]) {
+      if (!uid) continue;
+      batch.set(
+        db.collection('users').doc(uid),
+        {
+          collaborationCount: FieldValue.increment(1),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
+    }
+    batch.update(connRef, {
+      collaborationCountApplied: true,
+      updatedAt: new Date().toISOString(),
+    });
+    await batch.commit();
+
+    return res.json({
+      success: true,
+      senderId: data.senderId,
+      recipientId: data.recipientId,
+    });
+  } catch (error: any) {
+    console.error('[collaborations/activate-count]', error?.message || error);
+    return res.status(500).json({ error: error.message || 'Server error' });
+  }
+});
+
+/** Count real collaborations for a user from connection documents (source of truth). */
+async function countCollaborationsFromConnections(db: any, userId: string): Promise<number> {
+  const statuses = new Set(['collaborating', 'completed']);
+  const seen = new Set<string>();
+  let count = 0;
+
+  const [asSender, asRecipient] = await Promise.all([
+    db.collection('connections').where('senderId', '==', userId).get(),
+    db.collection('connections').where('recipientId', '==', userId).get(),
+  ]);
+
+  for (const snap of [asSender, asRecipient]) {
+    for (const doc of snap.docs) {
+      if (seen.has(doc.id)) continue;
+      seen.add(doc.id);
+      const st = String((doc.data() as any)?.status || '');
+      if (statuses.has(st)) count += 1;
+    }
+  }
+  return count;
+}
+
+// 7. GET /api/users/:userId/collaboration-count
+// Derived from existing connections — not from a counter that starts at 0.
+// Public number only (no peer identities). Also backfills users.collaborationCount.
+postRoutes.get('/users/:userId/collaboration-count', async (req, res) => {
+  try {
+    const db = getAdminDb();
+    const { userId } = req.params;
+    if (!userId) return res.status(400).json({ error: 'userId required' });
+
+    const count = await countCollaborationsFromConnections(db, userId);
+
+    // Keep denormalized field in sync for profile docs / older UI readers
+    try {
+      const userRef = db.collection('users').doc(userId);
+      const userSnap = await userRef.get();
+      const prev = userSnap.exists ? Number((userSnap.data() as any)?.collaborationCount) || 0 : 0;
+      if (prev !== count) {
+        await userRef.set(
+          { collaborationCount: count, updatedAt: FieldValue.serverTimestamp() },
+          { merge: true }
+        );
+      }
+    } catch (e: any) {
+      console.warn('[collaboration-count] backfill write skipped:', e?.message || e);
+    }
+
+    return res.json({ userId, count });
+  } catch (error: any) {
+    console.error('[collaboration-count]', error?.message || error);
+    return res.status(500).json({ error: error.message || 'Server error', count: 0 });
+  }
+});
+

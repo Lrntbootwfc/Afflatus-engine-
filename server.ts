@@ -14,6 +14,7 @@ import { recommendationRoutes } from './server/routes/recommendationRoutes';
 import { projectRoutes } from './server/routes/projectRoutes';
 import { chatRoutes } from './server/routes/chatRoutes';
 import { postRoutes } from './server/routes/postRoutes';
+import { collaborationQuestionsRoutes } from './server/routes/collaborationQuestionsRoutes';
 
 import { getDatabase, saveDatabase } from './server/db';
 import type { DBUser } from './server/types';
@@ -58,6 +59,9 @@ app.use('/api', chatRoutes);
 
 // Post routes for creating and viewing posts
 app.use('/api', postRoutes);
+
+// Progressive collaboration questions (optional, non-blocking)
+app.use('/api/collaboration-questions', collaborationQuestionsRoutes);
 
 // Lazy initialize Gemini API client with required User-Agent
 let aiClient: GoogleGenAI | null = null;
