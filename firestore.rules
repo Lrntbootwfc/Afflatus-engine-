@@ -1,15 +1,12 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-
     function isSignedIn() {
       return request.auth != null;
     }
-
     function isOwner(userId) {
       return isSignedIn() && request.auth.uid == userId;
     }
-
     function isAdmin() {
       return isSignedIn()
         && request.auth.token.email is string
@@ -17,25 +14,20 @@ service cloud.firestore {
           'divyasharmagdscoist@gmail.com'
         ];
     }
-
     function myUserPath() {
       return /databases/$(database)/documents/users/$(request.auth.uid);
     }
-
     function userDocExists() {
       return isSignedIn() && exists(myUserPath());
     }
-
     // Interaction (collaborate / message / post / like) after basic profile is saved
     function canInteract() {
       return userDocExists()
         && get(myUserPath()).data.profileCompleted == true;
     }
-
     match /{document=**} {
       allow read, write: if false;
     }
-
     // -------- USERS --------
     // Public read so Explore can show APPROVED creators (client filters pending).
     // Owner may edit profile immediately after approval, even if incomplete.
@@ -44,22 +36,18 @@ service cloud.firestore {
       allow create: if isOwner(userId);
       allow update: if isOwner(userId) || isAdmin();
       allow delete: if isOwner(userId);
-
       match /aiMatchConversations/{conversationId} {
         allow read, write: if isOwner(userId);
       }
     }
-
     // -------- APPLICATIONS --------
     match /applications/{userId} {
       allow get: if isOwner(userId) || isAdmin()
         || (isSignedIn() && resource.data.userId == request.auth.uid);
       allow list: if isAdmin();
-
       allow create: if isOwner(userId)
         && request.resource.data.status == 'pending'
         && request.resource.data.userId == request.auth.uid;
-
       allow update: if
         (
           isOwner(userId)
@@ -71,10 +59,8 @@ service cloud.firestore {
           isAdmin()
           && request.resource.data.status in ['pending', 'approved', 'rejected']
         );
-
       allow delete: if false;
     }
-
     // -------- NOTIFICATIONS --------
     match /notifications/{notificationId} {
       allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
@@ -88,7 +74,6 @@ service cloud.firestore {
       allow update: if isSignedIn() && resource.data.userId == request.auth.uid;
       allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
     }
-
     // -------- CONNECTIONS (proposals / DMs) --------
     match /connections/{connectionId} {
       // Missing doc must be readable so the client can check existence
@@ -115,7 +100,6 @@ service cloud.firestore {
         resource.data.recipientId == request.auth.uid
       );
     }
-
     // -------- MESSAGES --------
     match /messages/{messageId} {
       allow get: if isSignedIn() && (
@@ -138,7 +122,6 @@ service cloud.firestore {
         && resource.data.recipientId == request.auth.uid;
       allow delete: if false;
     }
-
     // -------- CONTENT / EXPLORE --------
     match /projects/{projectId} {
       allow read: if true;
@@ -146,28 +129,24 @@ service cloud.firestore {
         && request.resource.data.seekerId == request.auth.uid;
       allow update, delete: if isSignedIn() && resource.data.seekerId == request.auth.uid;
     }
-
     match /works/{workId} {
       allow read: if true;
       allow create: if isSignedIn() && canInteract()
         && request.resource.data.creatorId == request.auth.uid;
       allow update, delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
     }
-
     match /tasks/{taskId} {
       allow read: if true;
       allow create: if isSignedIn() && canInteract()
         && request.resource.data.creatorId == request.auth.uid;
       allow update, delete: if isSignedIn() && resource.data.creatorId == request.auth.uid;
     }
-
     match /clubs/{clubId} {
       allow read: if true;
       allow create: if isSignedIn() && canInteract()
         && request.resource.data.leadCreatorId == request.auth.uid;
       allow update, delete: if isSignedIn() && resource.data.leadCreatorId == request.auth.uid;
     }
-
     match /posts/{postId} {
       allow read: if true;
       allow create: if isSignedIn() && canInteract()
@@ -179,7 +158,6 @@ service cloud.firestore {
       );
       allow delete: if isSignedIn() && resource.data.authorId == request.auth.uid;
     }
-
     match /portfolioLikes/{itemId} {
       allow read: if true;
       allow create, update: if isSignedIn() && canInteract()
@@ -188,7 +166,6 @@ service cloud.firestore {
         && request.resource.data.likedBy is list;
       allow delete: if false;
     }
-
     match /matches/{matchId} {
       allow read: if isSignedIn() && (
         resource.data.seekerId == request.auth.uid ||
@@ -204,7 +181,6 @@ service cloud.firestore {
       );
       allow delete: if isSignedIn() && resource.data.seekerId == request.auth.uid;
     }
-
     match /workspaces/{projectId} {
       allow read: if isSignedIn();
       allow create, update: if isSignedIn() && canInteract();

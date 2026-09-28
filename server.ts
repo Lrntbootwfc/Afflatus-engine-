@@ -6,7 +6,7 @@ import dotenv from 'dotenv';
 
 // VERY IMPORTANT: Load config BEFORE any local imports that depend on process.env (like firebaseAdmin)
 dotenv.config();
-
+import { sendOtpEmail, shouldExposeOtpInResponse } from './server/services/otpEmailService';
 import { exploreRoutes } from './server/routes/exploreRoutes';
 import { assistantRoutes } from './server/routes/aiAssistantRoutes';
 import { profileRoutes } from './server/routes/profileRoutes';
@@ -593,119 +593,86 @@ app.post('/api/auth/send-otp', async (req, res) => {
     return res.status(400).json({ error: 'Name and email are required to request an OTP.' });
   }
 
-  const cleanEmail = email.trim().toLowerCase();
-
-  // Validate email format
+  const cleanEmail = String(email).trim().toLowerCase();
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(cleanEmail)) {
     return res.status(400).json({ error: 'Please provide a valid email address.' });
   }
 
-  // Check if email already registered
-  const existingEmail = database.users.find((u) => u.email.toLowerCase() === cleanEmail);
-  if (existingEmail) {
-    return res.status(409).json({ error: 'An account with this email already exists. Please log in.' });
+  if (cleanEmail.split('@')[0].length < 2) {
+    return res.status(400).json({ error: 'Please provide a valid email address.' });
   }
 
-  // Generate secure 6-digit OTP
+  const existingEmail = database.users.find(
+    (u) => u.email && u.email.toLowerCase() === cleanEmail
+  );
+  if (existingEmail) {
+    return res.status(409).json({
+      error: 'An account with this email already exists. Please log in.',
+    });
+  }
+
   const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes expiry
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
   otpStore[cleanEmail] = {
     otp: generatedOtp,
     expiresAt,
     userData: {
-      username: username || name.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+      username: username || String(name).toLowerCase().replace(/[^a-z0-9]/g, '_'),
       email: cleanEmail,
       password: password || 'password123',
-      name: name.trim(),
+      name: String(name).trim(),
       primaryRole: primaryRole || 'Cinematographer',
-      seekingRoles: seekingRoles || ['Director', 'Lead Video Editor', 'Location Sound Recordist'],
+      seekingRoles: seekingRoles || [
+        'Director',
+        'Lead Video Editor',
+        'Location Sound Recordist',
+      ],
     },
   };
 
-  console.log(`[AUTH] Verification OTP for ${cleanEmail}: ${generatedOtp}`);
+  console.log(`[AUTH] OTP generated for ${cleanEmail}`);
 
-  // Attempt real email dispatch via Gmail API if OAuth token provided
   const authHeader = req.headers.authorization;
-  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
-  const tokenToUse = gmailAccessToken || bearerToken || process.env.GMAIL_ACCESS_TOKEN;
+  const bearerToken = authHeader?.startsWith('Bearer ')
+    ? authHeader.substring(7)
+    : null;
 
-  let emailSentReal = false;
-  let emailDeliveryNote = '';
+  const delivery = await sendOtpEmail({
+    to: cleanEmail,
+    name: String(name).trim(),
+    otp: generatedOtp,
+    gmailAccessToken: gmailAccessToken || bearerToken,
+  });
 
-  if (tokenToUse) {
-    try {
-      const subject = `Your Afflatus Verification Code: ${generatedOtp}`;
-      const htmlBody = `
-        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; background: #141210; color: #F8F5F0; border-radius: 16px; padding: 32px; border: 1px solid #3A332C;">
-          <div style="margin-bottom: 24px;">
-            <span style="font-size: 11px; font-weight: 700; color: #E58B13; letter-spacing: 2px; text-transform: uppercase;">Afflatus Studio Exchange</span>
-            <h1 style="font-size: 24px; font-weight: 800; margin: 8px 0 0 0; color: #F8F5F0;">Email Verification</h1>
-          </div>
-          <p style="font-size: 14px; line-height: 1.6; color: #D8CFC4; margin-bottom: 24px;">
-            Hello <strong>${name.trim()}</strong>,<br/>
-            Use the following 6-digit one-time passcode (OTP) to verify your filmmaker account on Afflatus:
-          </p>
-          <div style="background: #231F1C; border: 2px solid #E58B13; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
-            <span style="font-size: 36px; font-family: monospace; font-weight: 800; letter-spacing: 8px; color: #F5A623;">${generatedOtp}</span>
-            <div style="font-size: 12px; color: #8C7862; margin-top: 8px;">Valid for the next 10 minutes</div>
-          </div>
-          <p style="font-size: 12px; line-height: 1.5; color: #8C7862;">
-            If you did not request this verification code, please disregard this email.
-          </p>
-        </div>
-      `;
+  const isProd = process.env.NODE_ENV === 'production';
+  const allowPreview = shouldExposeOtpInResponse();
 
-      const rawMessage = [
-        `To: ${cleanEmail}`,
-        `Subject: =?utf-8?B?${Buffer.from(subject).toString('base64')}?=`,
-        `MIME-Version: 1.0`,
-        `Content-Type: text/html; charset=utf-8`,
-        `Content-Transfer-Encoding: 7bit`,
-        '',
-        htmlBody,
-      ].join('\r\n');
-
-      const encodedMessage = Buffer.from(rawMessage)
-        .toString('base64')
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
-
-      const gmailRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${tokenToUse}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ raw: encodedMessage }),
-      });
-
-      if (gmailRes.ok) {
-        emailSentReal = true;
-        emailDeliveryNote = 'Email sent to inbox via Gmail API';
-      } else {
-        const errJson = await gmailRes.json().catch(() => ({}));
-        console.warn('Gmail API send returned error:', errJson);
-      }
-    } catch (sendErr) {
-      console.error('Error invoking Gmail API from backend:', sendErr);
-    }
+  // Production: do not allow signup OTP without a real email
+  if (!delivery.sent && isProd && process.env.ALLOW_OTP_WITHOUT_EMAIL !== 'true') {
+    delete otpStore[cleanEmail];
+    return res.status(503).json({
+      success: false,
+      error:
+        delivery.error ||
+        'Could not send verification email. Configure RESEND_API_KEY on the Engine service.',
+      emailSentReal: false,
+    });
   }
 
-  // In development/preview without direct email delivery, provide the OTP for testing.
-  // In production, the OTP is strictly delivered to the user's real email inbox.
-  const isDevPreview = process.env.NODE_ENV !== 'production' || process.env.ALLOW_OTP_PREVIEW === 'true';
+  if (!delivery.sent) {
+    console.warn('[AUTH] OTP email not sent:', delivery.error);
+  }
 
   return res.json({
     success: true,
-    message: emailSentReal 
-      ? `Verification code sent to ${cleanEmail}. Please check your inbox.` 
-      : `Verification code generated for ${cleanEmail}`,
-    emailSentReal,
-    emailDeliveryNote,
-    otp: isDevPreview ? generatedOtp : undefined,
+    message: delivery.sent
+      ? `Verification code sent to ${cleanEmail}. Please check your inbox (and spam).`
+      : `Verification code generated for ${cleanEmail} (email provider not configured — dev only).`,
+    emailSentReal: delivery.sent,
+    emailProvider: delivery.provider || null,
+    otp: allowPreview ? generatedOtp : undefined,
     expiresInSeconds: 600,
   });
 });
