@@ -5,6 +5,16 @@ import { FieldValue } from 'firebase-admin/firestore';
 export const postRoutes = Router();
 
 // 1. POST /api/posts: Create a post
+/** Approx decoded byte length of a data URL (base64). */
+function dataUrlByteLength(dataUrl: string): number {
+  if (!dataUrl || typeof dataUrl !== 'string') return 0;
+  if (!dataUrl.startsWith('data:')) return 0;
+  const base64 = dataUrl.split(',')[1] || '';
+  return Math.round((base64.length * 3) / 4);
+}
+
+const POST_IMAGE_HARD_MAX = 1 * 1024 * 1024; // 1 MB — matches client mediaLimits
+
 postRoutes.post('/posts', async (req, res) => {
   try {
     const db = getAdminDb();
@@ -12,6 +22,16 @@ postRoutes.post('/posts', async (req, res) => {
 
     if (!authorId || (!caption && !imageUrl)) {
       return res.status(400).json({ error: 'Missing required fields.' });
+    }
+
+    // Server-side media limit (do not rely on frontend alone)
+    if (imageUrl && typeof imageUrl === 'string' && imageUrl.startsWith('data:')) {
+      const bytes = dataUrlByteLength(imageUrl);
+      if (bytes > POST_IMAGE_HARD_MAX) {
+        return res.status(400).json({
+          error: `Image exceeds maximum size of 1 MB (received ~${Math.round(bytes / 1024)} KB). Compress before upload.`,
+        });
+      }
     }
 
     const postDoc = {

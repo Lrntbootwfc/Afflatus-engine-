@@ -39,48 +39,99 @@ export class ExploreService {
     let score = 20;
     const reasons: string[] = [];
 
-    // 1. Soft Compatibility Scoring based on collaborationProfile
+    // 1. Soft Compatibility Scoring based on collaborationProfile (initial + progressive signals)
     const userProfile = (currentUser as any).collaborationProfile;
     const candidateProfile = (candidate as any).collaborationProfile;
 
     if (userProfile && candidateProfile) {
-      // Complementary matches
-      if (userProfile.leadership >= 8 && candidateProfile.flexibility >= 7) {
+      // Complementary matches — only emit reason when both dimensions actually present
+      if (
+        typeof userProfile.leadership === 'number' &&
+        userProfile.leadership >= 8 &&
+        typeof candidateProfile.flexibility === 'number' &&
+        candidateProfile.flexibility >= 7
+      ) {
         score += 15;
-        reasons.push('Highly compatible workflow (Leadership + Flexibility)');
-      } else if (userProfile.creativity >= 8 && candidateProfile.technical_proficiency >= 8) {
+        reasons.push('Compatible workflow (your leadership + their flexibility)');
+      } else if (
+        typeof userProfile.creativity === 'number' &&
+        userProfile.creativity >= 8 &&
+        typeof candidateProfile.technical_proficiency === 'number' &&
+        candidateProfile.technical_proficiency >= 8
+      ) {
         score += 15;
-        reasons.push('Great creative/technical synergy');
-      }
-      
-      // General good traits
-      if (candidateProfile.communication >= 8) {
-        score += 10;
-        reasons.push('Excellent communicator');
-      }
-      if (candidateProfile.reliability >= 8) {
-        score += 10;
-        reasons.push('Highly reliable');
+        reasons.push('Creative/technical synergy based on collaboration signals');
       }
 
-      // Add a small randomized variation to keep the feed fresh for discovery
-      score += Math.floor(Math.random() * 10);
+      if (typeof candidateProfile.communication === 'number' && candidateProfile.communication >= 8) {
+        score += 10;
+        reasons.push('Strong communication signals');
+      }
+      if (typeof candidateProfile.reliability === 'number' && candidateProfile.reliability >= 8) {
+        score += 10;
+        reasons.push('High reliability signals');
+      }
+
+      // Shared behavioural traits (progressive + initial analysis)
+      const traitKeys = ['teamwork', 'creativity', 'flexibility'] as const;
+      for (const k of traitKeys) {
+        const a = Number(userProfile[k]);
+        const b = Number(candidateProfile[k]);
+        if (Number.isFinite(a) && Number.isFinite(b) && a >= 7 && b >= 7) {
+          score += 5;
+          reasons.push(`Shared ${k} collaboration signal`);
+          break;
+        }
+      }
     } else {
       score += 10; // Base score for incomplete profiles
     }
 
-    // 2. Location Proximity
+    // 2. Role compatibility (shared / complementary roles)
+    const userRole = (currentUser.primaryRole || '').toLowerCase();
+    const candRole = (candidate.primaryRole || '').toLowerCase();
+    const userSecondary = (currentUser.secondaryRoles || []).map((r) => r.toLowerCase());
+    const candSecondary = (candidate.secondaryRoles || []).map((r) => r.toLowerCase());
+    if (userRole && candRole && userRole === candRole) {
+      score += 12;
+      reasons.push(`Same primary role: ${candidate.primaryRole}`);
+    } else if (
+      userRole &&
+      (candSecondary.includes(userRole) || userSecondary.includes(candRole))
+    ) {
+      score += 10;
+      reasons.push(`Compatible roles (${currentUser.primaryRole} ↔ ${candidate.primaryRole})`);
+    }
+
+    // 3. Location Proximity
     if (currentUser.location && candidate.location && currentUser.location.toLowerCase() === candidate.location.toLowerCase()) {
       score += 15;
       reasons.push(`Based near you in ${candidate.location}`);
     }
 
-    // 3. Equipment/Portfolio richness
-    if (candidate.gearItems && candidate.gearItems.length > 0) {
-      score += 10;
+    // 4. Prior collaboration (if collaborationCount or edge data present on profile)
+    const priorCollab = Number((candidate as any).collaborationCount) || 0;
+    if (priorCollab > 0 && reasons.length < 3) {
+      score += 5;
+      // Do not invent peer identity — only signal experience volume when real
+      reasons.push('Experienced collaborator on the platform');
     }
 
-    const mainReason = reasons.length > 0 ? reasons.join(' • ') : `Creative professional in ${candidate.primaryRole}`;
+    // 5. Equipment/Portfolio richness
+    if (candidate.gearItems && candidate.gearItems.length > 0) {
+      score += 8;
+    }
+    const works = Number((candidate as any).worksCount) || (candidate as any).portfolios?.length || 0;
+    if (works > 0) {
+      score += 5;
+    }
+
+    // Deduplicate reasons, keep max 3 concrete reasons
+    const unique = Array.from(new Set(reasons)).slice(0, 3);
+    const mainReason =
+      unique.length > 0
+        ? unique.join(' • ')
+        : `Creative professional in ${candidate.primaryRole || 'the network'}`;
     return { score, reason: mainReason };
   }
 
@@ -142,10 +193,11 @@ export class ExploreService {
           (p.seeker && p.seeker.name.toLowerCase().includes(query))
       );
     }
-    // Deterministic ranking for projects based on user profile and role requirements
+    // Deterministic ranking for projects based on user profile, role requirements, and behavioural signals
     if (currentUser) {
       const userRole = (currentUser.primaryRole || '').toLowerCase();
       const userLocation = (currentUser.location || '').toLowerCase();
+      const userCp = (currentUser as any).collaborationProfile || {};
       projects.sort((a, b) => {
         let scoreA = 0;
         let scoreB = 0;
@@ -157,6 +209,21 @@ export class ExploreService {
 
         if (userLocation && a.location.toLowerCase().includes(userLocation)) scoreA += 15;
         if (userLocation && b.location.toLowerCase().includes(userLocation)) scoreB += 15;
+
+        // Genre / tag overlap with user interests when present
+        const userInterests = Object.keys((currentUser as any).interests || {}).map((k) => k.toLowerCase());
+        if (userInterests.length) {
+          if ((a.genreTags || []).some((g) => userInterests.includes(String(g).toLowerCase()))) scoreA += 10;
+          if ((b.genreTags || []).some((g) => userInterests.includes(String(g).toLowerCase()))) scoreB += 10;
+        }
+
+        // Soft boost when user has strong reliability/communication signals (project-fit heuristic)
+        const reliability = Number(userCp.reliability) || 0;
+        const communication = Number(userCp.communication) || 0;
+        if (reliability >= 7 || communication >= 7) {
+          scoreA += 3;
+          scoreB += 3;
+        }
 
         return scoreB - scoreA;
       });
