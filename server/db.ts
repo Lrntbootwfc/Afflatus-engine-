@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import type { DatabaseSchema, DBUser, Project, ProjectTask, CreativeClub, WorkShowcase } from './types';
 import type { CreatorProfile } from '../shared/types/index';
-import { SEED_PROJECTS, SEED_TASKS, SEED_CLUBS, SEED_WORKS } from './seeds';
+// Seed catalogs kept in ./seeds for optional admin demos — not auto-loaded.
+// import { SEED_PROJECTS, SEED_TASKS, SEED_CLUBS, SEED_WORKS } from './seeds';
 
 let inMemoryDb: DatabaseSchema | null = null;
 
@@ -11,13 +12,15 @@ export function getDatabase(): DatabaseSchema {
     return inMemoryDb;
   }
   
+  // Testing / production: do NOT load legacy demo seed content into the live in-memory store.
+  // Explore feed on the client reads Firestore; seed arrays remain in seeds.ts for explicit admin demos only.
   inMemoryDb = {
     users: [],
     connections: [],
-    projects: [...SEED_PROJECTS],
-    tasks: [...SEED_TASKS],
-    clubs: [...SEED_CLUBS],
-    workShowcases: [...SEED_WORKS],
+    projects: [],
+    tasks: [],
+    clubs: [],
+    workShowcases: [],
     matches: [],
     workspaces: {},
     posts: [],

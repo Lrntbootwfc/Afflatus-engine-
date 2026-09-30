@@ -1288,7 +1288,6 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Main Backend] Afflatus API running on http://localhost:${PORT}`);
-    console.log(`[Main Backend] AI Backend expected at ${process.env.AI_BACKEND_URL || 'http://localhost:3001'}`);
   });
 }
 
