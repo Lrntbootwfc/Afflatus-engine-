@@ -281,18 +281,28 @@ function mergeIntoCollaborationProfile(existing: any, signals: Record<string, nu
     teamwork: 'teamwork',
     trust: 'reliability',
   };
+  const confOut =
+    cp.confidenceScores && typeof cp.confidenceScores === 'object' ? { ...cp.confidenceScores } : {};
   for (const [src, dest] of Object.entries(map)) {
     const v = Number(signals[src]);
     const c = Number(conf[src] ?? 0.3);
     if (!Number.isFinite(v) || c < 0.15) continue;
     const prev = Number(cp[dest]);
-    // Blend if prior exists; else set
+    // Blend progressive behavioural signal into trait (does not wipe peer feedbackCount)
     if (Number.isFinite(prev) && prev > 0) {
       cp[dest] = Math.round((prev * 0.55 + v * 0.45) * 10) / 10;
     } else {
       cp[dest] = v;
     }
+    const prevC = Number(confOut[dest]);
+    const cClamped = Math.max(0, Math.min(1, c));
+    if (Number.isFinite(prevC)) {
+      confOut[dest] = Math.round(Math.min(1, prevC * 0.5 + cClamped * 0.5) * 100) / 100;
+    } else {
+      confOut[dest] = cClamped;
+    }
   }
+  cp.confidenceScores = confOut;
   cp.progressiveSignalsUpdatedAt = new Date().toISOString();
   return cp;
 }

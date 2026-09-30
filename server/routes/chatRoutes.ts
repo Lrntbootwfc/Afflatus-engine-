@@ -265,16 +265,33 @@ chatRoutes.post('/feedback/:targetUserId', async (req, res) => {
     const newCount = count + 1;
     const updatedProfile = { ...currentProfile, feedbackCount: newCount };
 
-    // Bayesian prior: weight of 3 reviews at score 5.0
-    const PRIOR_WEIGHT = 3;
+    // Lighter prior so peer feedback moves scores more visibly after real collabs.
+    // Still anchors unknowns near neutral when few reviews exist.
+    const PRIOR_WEIGHT = 1;
     const PRIOR_SCORE = 5.0;
 
+    const prevConf =
+      currentProfile.confidenceScores && typeof currentProfile.confidenceScores === 'object'
+        ? { ...currentProfile.confidenceScores }
+        : {};
+
     for (const trait of Object.keys(ratings)) {
-      const oldScore = currentProfile[trait] || 5;
-      const newScore = ratings[trait];
-      const bayesianAverage = ((PRIOR_SCORE * PRIOR_WEIGHT) + (oldScore * count) + newScore) / (PRIOR_WEIGHT + count + 1);
+      const raw = Number(ratings[trait]);
+      if (!Number.isFinite(raw)) continue;
+      const newScore = Math.max(1, Math.min(10, raw));
+      const oldScore = Number(currentProfile[trait]);
+      const base = Number.isFinite(oldScore) ? oldScore : PRIOR_SCORE;
+      // Weighted blend: prior + existing evidence (count) + this peer rating
+      const bayesianAverage =
+        (PRIOR_SCORE * PRIOR_WEIGHT + base * count + newScore) / (PRIOR_WEIGHT + count + 1);
       updatedProfile[trait] = Math.round(bayesianAverage * 10) / 10;
+
+      // Raise per-trait confidence with each peer review (real, not NaN display hack)
+      const prevC = Number(prevConf[trait]);
+      const c0 = Number.isFinite(prevC) ? Math.max(0, Math.min(1, prevC)) : 0.25;
+      prevConf[trait] = Math.round(Math.min(1, c0 + 0.15) * 100) / 100;
     }
+    updatedProfile.confidenceScores = prevConf;
 
     const batch = db.batch();
     
