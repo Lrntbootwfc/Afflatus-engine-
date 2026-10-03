@@ -151,10 +151,15 @@ service cloud.firestore {
       allow read: if true;
       allow create: if isSignedIn() && canInteract()
         && request.resource.data.authorId == request.auth.uid;
+      // Author can edit caption/media; completed profiles may toggle likes
+      // (Admin API uses likes[]; legacy likedBy/likeCount also allowed).
       allow update: if isSignedIn() && (
         resource.data.authorId == request.auth.uid
-        || request.resource.data.diff(resource.data).affectedKeys()
-            .hasOnly(['likedBy', 'likeCount', 'updatedAt'])
+        || (
+          canInteract()
+          && request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['likes', 'likedBy', 'likeCount', 'updatedAt'])
+        )
       );
       allow delete: if isSignedIn() && resource.data.authorId == request.auth.uid;
     }

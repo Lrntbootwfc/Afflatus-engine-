@@ -85,6 +85,33 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
       data.roles = [data.role];
     }
 
+    // Vague phrasing ("role as mine") → use requester's own roles from profile
+    const roleMissing =
+      (!data.roles || !Array.isArray(data.roles) || !data.roles.length) &&
+      (!data.role || data.role === 'not_specified');
+    if (roleMissing && requesterId) {
+      try {
+        const { getUser } = await import('../services/dataStore');
+        const me = await getUser(requesterId);
+        if (me) {
+          const mine = [
+            me.primaryRole,
+            ...(Array.isArray(me.secondaryRoles) ? me.secondaryRoles : []),
+            ...(Array.isArray(me.rolesOffered) ? me.rolesOffered : []),
+            ...(Array.isArray(me.professions) ? me.professions : []),
+          ]
+            .map((r: any) => String(r || '').trim())
+            .filter(Boolean);
+          if (mine.length) {
+            data.roles = Array.from(new Set(mine));
+            data.role = mine[0];
+          }
+        }
+      } catch (e: any) {
+        console.warn('[ai-match] requester role fallback failed:', e?.message || e);
+      }
+    }
+
     // Location resolution (session > extracted > profile default). Never silent.
     const bodyLoc =
       (typeof req.body?.sessionLocation === 'string' && req.body.sessionLocation.trim()) ||
@@ -96,14 +123,32 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
         ? String(data.location.city).trim()
         : '';
 
+    const isRemoteLike = (s: string) =>
+      /remote|worldwide|anywhere|open to travel|work from anywhere|global/i.test(s || '');
+
     if (extractedCity) {
       locationSource = 'explicit';
+      if (isRemoteLike(extractedCity)) {
+        data.location = { city: 'not_specified' };
+        locationSource = 'none';
+      }
     } else if (typeof req.body?.sessionLocation === 'string' && req.body.sessionLocation.trim()) {
-      data.location = { city: req.body.sessionLocation.trim() };
-      locationSource = 'session';
+      const s = req.body.sessionLocation.trim();
+      if (isRemoteLike(s)) {
+        data.location = { city: 'not_specified' };
+        locationSource = 'none';
+      } else {
+        data.location = { city: s };
+        locationSource = 'session';
+      }
     } else if (bodyLoc) {
-      data.location = { city: bodyLoc };
-      locationSource = 'profile';
+      if (isRemoteLike(bodyLoc)) {
+        data.location = { city: 'not_specified' };
+        locationSource = 'none';
+      } else {
+        data.location = { city: bodyLoc };
+        locationSource = 'profile';
+      }
     }
 
     // If Gemini left roles empty but user clearly asked for a role word, keep failure honest
