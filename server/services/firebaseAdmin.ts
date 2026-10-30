@@ -4,11 +4,14 @@
  * verifies ID tokens. Otherwise falls back to x-user-id (dev mode).
  */
 import type { Request } from 'express';
-import admin from 'firebase-admin';
+import { getApps, getApp, initializeApp, type App } from 'firebase-admin/app';
+import { cert, applicationDefault } from 'firebase-admin/app';
+import { getAuth, type Auth } from 'firebase-admin/auth';
+import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
-let adminApp: any = null;
-let adminAuth: any = null;
-let adminDb: any = null;
+let adminApp: App | null = null;
+let adminAuth: Auth | null = null;
+let adminDb: Firestore | null = null;
 let initAttempted = false;
 
 export function isFirebaseAdminReady(): boolean {
@@ -20,16 +23,16 @@ function ensureInit() {
   if (initAttempted) return;
   initAttempted = true;
   try {
-    if (admin.apps?.length) {
-      adminApp = admin.app();
+    if (getApps().length) {
+      adminApp = getApp();
     } else {
       const json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
       if (json) {
-        const cred = JSON.parse(json);
-        adminApp = admin.initializeApp({ credential: admin.credential.cert(cred) });
+        const parsedCred = JSON.parse(json);
+        adminApp = initializeApp({ credential: cert(parsedCred) });
       } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-        adminApp = admin.initializeApp({
-          credential: admin.credential.applicationDefault(),
+        adminApp = initializeApp({
+          credential: applicationDefault(),
         });
       } else {
         console.warn(
@@ -38,8 +41,8 @@ function ensureInit() {
         return;
       }
     }
-    adminAuth = admin.auth();
-    adminDb = admin.firestore();
+    adminAuth = getAuth(adminApp);
+    adminDb = getFirestore(adminApp);
     console.log('[FirebaseAdmin] Ready');
   } catch (err: any) {
     console.warn('[FirebaseAdmin] Init skipped:', err?.message || err);
@@ -71,11 +74,15 @@ export async function verifyIdToken(req: Request): Promise<string | null> {
 }
 
 /**
- * Resolve user id: Firebase token first, then x-user-id.
+ * Resolve user id: Firebase token first, then x-user-id (dev only).
+ *
+ * The x-user-id / userId fallback is unauthenticated — anyone who knows a uid
+ * can impersonate that user through it. It must never be trusted in production.
  */
 export async function resolveUserIdAsync(req: Request): Promise<string | null> {
   const fromToken = await verifyIdToken(req);
   if (fromToken) return fromToken;
+  if (process.env.NODE_ENV === 'production') return null;
   const h = req.headers['x-user-id'] || req.headers['x-userid'];
   if (typeof h === 'string' && h.trim()) return h.trim();
   if (typeof req.query.userId === 'string') return req.query.userId;

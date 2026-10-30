@@ -5,7 +5,8 @@
  */
 import { isFirebaseAdminReady } from './firebaseAdmin';
 
-import admin from 'firebase-admin';
+import { getApp } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
 let db: any = null;
 
@@ -13,7 +14,7 @@ function getDb() {
   if (db) return db;
   if (!isFirebaseAdminReady()) return null;
   try {
-    db = admin.firestore();
+    db = getFirestore(getApp());
     return db;
   } catch {
     return null;

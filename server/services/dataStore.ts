@@ -19,7 +19,7 @@ export { isFirestoreEnabled };
 
 export async function logRecommendationEvent(event: RecommendationEvent) {
   if (isFirestoreEnabled()) {
-    return fsAdd('recommendationEvents', event);
+    return fsAdd('recommendationEvents', event as unknown as Record<string, unknown>);
   }
   const db = getDatabase() as any;
   if (!db.recommendationEvents) db.recommendationEvents = [];
@@ -112,19 +112,18 @@ export async function queryUsersByRoles(
     return Array.from(byId.values());
   }
 
-  for (const role of wanted) {
-    for (const v of roleVariants(role)) {
-      const batches = await Promise.all([
-        fsQuery('users', [{ field: 'primaryRole', op: '==', value: v }], limitPerQuery),
-        fsQuery('users', [{ field: 'secondaryRoles', op: 'array-contains', value: v }], limitPerQuery),
-        fsQuery('users', [{ field: 'rolesOffered', op: 'array-contains', value: v }], limitPerQuery),
-      ]);
-      for (const batch of batches) {
-        for (const u of batch) {
-          if (!u?.id || (exclude && u.id === exclude)) continue;
-          byId.set(u.id, u);
-        }
-      }
+  const variants = Array.from(new Set(wanted.flatMap((role) => roleVariants(role))));
+  const allBatches = await Promise.all(
+    variants.flatMap((v) => [
+      fsQuery('users', [{ field: 'primaryRole', op: '==', value: v }], limitPerQuery),
+      fsQuery('users', [{ field: 'secondaryRoles', op: 'array-contains', value: v }], limitPerQuery),
+      fsQuery('users', [{ field: 'rolesOffered', op: 'array-contains', value: v }], limitPerQuery),
+    ])
+  );
+  for (const batch of allBatches) {
+    for (const u of batch) {
+      if (!u?.id || (exclude && u.id === exclude)) continue;
+      byId.set(u.id, u);
     }
   }
   return Array.from(byId.values());
@@ -165,16 +164,16 @@ export async function queryUsersByCity(
     return Array.from(byId.values());
   }
 
-  for (const v of variants) {
-    const batches = await Promise.all([
+  const allBatches = await Promise.all(
+    variants.flatMap((v) => [
       fsQuery('users', [{ field: 'city', op: '==', value: v }], limitPerQuery),
       fsQuery('users', [{ field: 'locationCity', op: '==', value: v }], limitPerQuery),
-    ]);
-    for (const batch of batches) {
-      for (const u of batch) {
-        if (!u?.id || (exclude && u.id === exclude)) continue;
-        byId.set(u.id, u);
-      }
+    ])
+  );
+  for (const batch of allBatches) {
+    for (const u of batch) {
+      if (!u?.id || (exclude && u.id === exclude)) continue;
+      byId.set(u.id, u);
     }
   }
   return Array.from(byId.values());

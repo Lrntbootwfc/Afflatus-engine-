@@ -11,6 +11,7 @@ export interface AuthedRequest extends Request {
 }
 
 export function resolveUserId(req: Request): string | null {
+  if (process.env.NODE_ENV === 'production') return null;
   const h = req.headers['x-user-id'] || req.headers['x-userid'];
   if (typeof h === 'string' && h.trim()) return h.trim();
   if (typeof req.query.userId === 'string') return req.query.userId;

@@ -3,27 +3,23 @@ import { ProjectService } from '../services/projectService';
 import { ExperienceService } from '../services/experienceService';
 import { CollaborationService } from '../services/collaborationService';
 import { NotificationService } from '../services/notificationService';
+import { resolveUserIdAsync } from '../services/firebaseAdmin';
 
 export const projectRoutes = Router();
 
-function uid(req: any): string | null {
-  const h = req.headers['x-user-id'] || req.headers['x-userid'];
-  if (typeof h === 'string' && h.trim()) return h.trim();
-  if (typeof req.query.userId === 'string') return req.query.userId;
-  if (typeof req.body?.userId === 'string') return req.body.userId;
-  return null;
-}
+/** Resolve userId: verified Firebase token first, x-user-id fallback in non-production only. */
+const uid = resolveUserIdAsync;
 
 // ---------- Projects ----------
-projectRoutes.post('/projects', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/projects', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const project = ProjectService.create(userId, req.body || {});
   res.status(201).json(project);
 });
 
-projectRoutes.get('/projects', (req, res) => {
-  const userId = uid(req);
+projectRoutes.get('/projects', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   res.json({ projects: ProjectService.listForUser(userId) });
 });
@@ -34,8 +30,8 @@ projectRoutes.get('/projects/:projectId', (req, res) => {
   res.json(p);
 });
 
-projectRoutes.patch('/projects/:projectId', (req, res) => {
-  const userId = uid(req);
+projectRoutes.patch('/projects/:projectId', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ProjectService.update(req.params.projectId, userId, req.body || {});
   if (!result) return res.status(404).json({ error: 'Project not found' });
@@ -43,8 +39,8 @@ projectRoutes.patch('/projects/:projectId', (req, res) => {
   res.json(result);
 });
 
-projectRoutes.delete('/projects/:projectId', (req, res) => {
-  const userId = uid(req);
+projectRoutes.delete('/projects/:projectId', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ProjectService.remove(req.params.projectId, userId);
   if (!result) return res.status(404).json({ error: 'Project not found' });
@@ -58,8 +54,8 @@ projectRoutes.get('/projects/:projectId/members', (req, res) => {
   res.json({ members });
 });
 
-projectRoutes.post('/projects/:projectId/members', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/projects/:projectId/members', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const memberId = req.body?.userId || req.body?.memberId;
   if (!memberId) return res.status(400).json({ error: 'memberId required' });
@@ -69,8 +65,8 @@ projectRoutes.post('/projects/:projectId/members', (req, res) => {
   res.json(result);
 });
 
-projectRoutes.delete('/projects/:projectId/members/:userId', (req, res) => {
-  const ownerId = uid(req);
+projectRoutes.delete('/projects/:projectId/members/:userId', async (req, res) => {
+  const ownerId = await uid(req);
   if (!ownerId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ProjectService.removeMember(req.params.projectId, ownerId, req.params.userId);
   if (!result) return res.status(404).json({ error: 'Project not found' });
@@ -78,8 +74,8 @@ projectRoutes.delete('/projects/:projectId/members/:userId', (req, res) => {
   res.json(result);
 });
 
-projectRoutes.post('/projects/:projectId/complete', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/projects/:projectId/complete', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ProjectService.completeProject(req.params.projectId, userId);
   if (!result) return res.status(404).json({ error: 'Project not found' });
@@ -88,8 +84,8 @@ projectRoutes.post('/projects/:projectId/complete', (req, res) => {
 });
 
 // ---------- Invitations ----------
-projectRoutes.post('/projects/:projectId/invitations', (req, res) => {
-  const inviterId = uid(req);
+projectRoutes.post('/projects/:projectId/invitations', async (req, res) => {
+  const inviterId = await uid(req);
   if (!inviterId) return res.status(401).json({ error: 'x-user-id required' });
   const inviteeId = req.body?.inviteeId || req.body?.userId;
   if (!inviteeId) return res.status(400).json({ error: 'inviteeId required' });
@@ -107,14 +103,14 @@ projectRoutes.post('/projects/:projectId/invitations', (req, res) => {
   res.status(201).json(result);
 });
 
-projectRoutes.get('/invitations', (req, res) => {
-  const userId = uid(req);
+projectRoutes.get('/invitations', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   res.json({ invitations: ProjectService.listInvitationsForUser(userId) });
 });
 
-projectRoutes.post('/invitations/:invitationId/accept', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/invitations/:invitationId/accept', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ProjectService.acceptInvitation(req.params.invitationId, userId);
   if ((result as any).error) {
@@ -125,8 +121,8 @@ projectRoutes.post('/invitations/:invitationId/accept', (req, res) => {
   res.json(result);
 });
 
-projectRoutes.post('/invitations/:invitationId/reject', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/invitations/:invitationId/reject', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ProjectService.rejectInvitation(req.params.invitationId, userId);
   if ((result as any).error) {
@@ -138,8 +134,8 @@ projectRoutes.post('/invitations/:invitationId/reject', (req, res) => {
 });
 
 // ---------- Past projects / experience (profile history) ----------
-projectRoutes.get('/profiles/me/projects', (req, res) => {
-  const userId = uid(req);
+projectRoutes.get('/profiles/me/projects', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   res.json({
     pastProjects: ExperienceService.getPastProjects(userId),
@@ -147,24 +143,24 @@ projectRoutes.get('/profiles/me/projects', (req, res) => {
   });
 });
 
-projectRoutes.post('/profiles/me/projects', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/profiles/me/projects', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ExperienceService.addPastProject(userId, req.body || {});
   if (!result) return res.status(404).json({ error: 'User not found' });
   res.status(201).json(result);
 });
 
-projectRoutes.patch('/profiles/me/projects/:projectId', (req, res) => {
-  const userId = uid(req);
+projectRoutes.patch('/profiles/me/projects/:projectId', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ExperienceService.updatePastProject(userId, req.params.projectId, req.body || {});
   if (!result) return res.status(404).json({ error: 'Not found' });
   res.json(result);
 });
 
-projectRoutes.delete('/profiles/me/projects/:projectId', (req, res) => {
-  const userId = uid(req);
+projectRoutes.delete('/profiles/me/projects/:projectId', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const result = ExperienceService.deletePastProject(userId, req.params.projectId);
   if (!result) return res.status(404).json({ error: 'Not found' });
@@ -172,8 +168,8 @@ projectRoutes.delete('/profiles/me/projects/:projectId', (req, res) => {
 });
 
 // ---------- Notifications ----------
-projectRoutes.post('/notifications/register-device', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/notifications/register-device', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const token = req.body?.token;
   if (!token) return res.status(400).json({ error: 'token required' });
@@ -181,29 +177,29 @@ projectRoutes.post('/notifications/register-device', (req, res) => {
   res.json(entry);
 });
 
-projectRoutes.get('/notifications', (req, res) => {
-  const userId = uid(req);
+projectRoutes.get('/notifications', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   res.json({ notifications: NotificationService.listForUser(userId) });
 });
 
-projectRoutes.post('/notifications/:id/read', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/notifications/:id/read', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const n = NotificationService.markRead(req.params.id, userId);
   if (!n) return res.status(404).json({ error: 'Not found' });
   res.json(n);
 });
 
-projectRoutes.post('/notifications/read-all', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/notifications/read-all', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   res.json(NotificationService.markAllRead(userId));
 });
 
 // ---------- Collaboration graph ----------
-projectRoutes.get('/collaborations/me', (req, res) => {
-  const userId = uid(req);
+projectRoutes.get('/collaborations/me', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   res.json({ collaborations: CollaborationService.listForUser(userId) });
 });
@@ -215,8 +211,8 @@ projectRoutes.get('/collaborations/score', (req, res) => {
   res.json({ userA: a, userB: b, collaborationScore: CollaborationService.getScore(a, b) });
 });
 
-projectRoutes.post('/collaborations/feedback', (req, res) => {
-  const userId = uid(req);
+projectRoutes.post('/collaborations/feedback', async (req, res) => {
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
   const otherId = req.body?.otherUserId;
   const rating = Number(req.body?.rating);

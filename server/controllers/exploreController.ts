@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { ExploreService } from '../services/exploreService';
 import type { ExploreItemType } from '../types';
+import { resolveUserIdAsync } from '../services/firebaseAdmin';
 
 export class ExploreController {
   /**
@@ -8,11 +9,11 @@ export class ExploreController {
    */
   public static async getFeed(req: Request, res: Response): Promise<void> {
     try {
-      const userId = typeof req.query.userId === 'string' ? req.query.userId : undefined;
+      const userId = (await resolveUserIdAsync(req)) || undefined;
       const category = typeof req.query.category === 'string' ? req.query.category : 'all';
       const search = typeof req.query.search === 'string' ? req.query.search : undefined;
 
-      const feed = ExploreService.getExploreFeed({ userId, category, search });
+      const feed = await ExploreService.getExploreFeed({ userId, category, search });
       res.json(feed);
     } catch (err) {
       console.error('[ExploreController.getFeed] Error:', err);
@@ -39,7 +40,7 @@ export class ExploreController {
         return;
       }
 
-      const item = ExploreService.getItemDetail(type, id);
+      const item = await ExploreService.getItemDetail(type, id);
       if (!item) {
         res.status(404).json({ success: false, error: `${type} not found with id ${id}` });
         return;
@@ -72,7 +73,7 @@ export class ExploreController {
         return;
       }
 
-      const related = ExploreService.getRelatedContent(type, id);
+      const related = await ExploreService.getRelatedContent(type, id);
       res.json(related);
     } catch (err) {
       console.error('[ExploreController.getRelated] Error:', err);
@@ -90,7 +91,7 @@ export class ExploreController {
         res.status(400).json({ success: false, error: 'Creator ID is required.' });
         return;
       }
-      const data = ExploreService.getCreatorPublicWork(creatorId);
+      const data = await ExploreService.getCreatorPublicWork(creatorId);
       if (!data) {
         res.status(404).json({ success: false, error: 'Creator not found.' });
         return;
@@ -107,9 +108,14 @@ export class ExploreController {
    */
   public static async applyToProjectOrTask(req: Request, res: Response): Promise<void> {
     try {
-      const { senderId, recipientId, projectId, taskId, message } = req.body;
+      const { recipientId, projectId, taskId, message } = req.body;
       if (!recipientId) {
         res.status(400).json({ success: false, error: 'Recipient ID is required.' });
+        return;
+      }
+      const senderId = (await resolveUserIdAsync(req)) || undefined;
+      if (!senderId) {
+        res.status(401).json({ success: false, error: 'Authentication required.' });
         return;
       }
       const result = ExploreService.applyToProjectOrTask({

@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { QueryUnderstandingService } from '../services/queryUnderstandingService';
 import { RecommendationService } from '../services/recommendationService';
+import { resolveUserIdAsync } from '../services/firebaseAdmin';
 
 export class AiAssistantController {
   /**
@@ -9,7 +10,8 @@ export class AiAssistantController {
   public static async chat(req: Request, res: Response): Promise<void> {
     try {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const { prompt, userId } = body;
+      const { prompt } = body;
+      const userId = (await resolveUserIdAsync(req)) || undefined;
 
       if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
         res.status(400).json({
@@ -22,7 +24,9 @@ export class AiAssistantController {
       const sanitizedPrompt = prompt.trim().slice(0, 2000);
 
       // 1. Understand query
-      const understood = await QueryUnderstandingService.understandChat(sanitizedPrompt);
+      const understood = await QueryUnderstandingService.understandChat([
+        { role: 'user', content: sanitizedPrompt },
+      ]);
       if (!understood.success || !understood.data) {
         res.status(500).json({ success: false, error: understood.error || 'Failed to understand query' });
         return;

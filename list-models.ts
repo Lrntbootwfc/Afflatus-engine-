@@ -8,7 +8,7 @@ async function run() {
     const models = await aiClient.models.list();
     console.log("Available models:");
     for await (const model of models) {
-      if (model.name.includes('flash') || model.name.includes('pro')) {
+      if (model.name && (model.name.includes('flash') || model.name.includes('pro'))) {
         console.log(`- ${model.name}`);
       }
     }

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getAdminDb, resolveUserIdAsync } from '../services/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
+import { uploadDataUrlToCloudinary, isDataUrl } from '../services/cloudinaryService';
 
 export const postRoutes = Router();
 
@@ -13,14 +14,17 @@ function dataUrlByteLength(dataUrl: string): number {
   return Math.round((base64.length * 3) / 4);
 }
 
-const POST_IMAGE_HARD_MAX = 1 * 1024 * 1024; // 1 MB — matches client mediaLimits
+// Images now go to Cloudinary, not inline into the Firestore doc, so this is a
+// sane upload-size cap (not the old 1 MiB Firestore-document-size workaround).
+const POST_IMAGE_HARD_MAX = 8 * 1024 * 1024; // 8 MB
 
 postRoutes.post('/posts', async (req, res) => {
   try {
     const db = getAdminDb();
-    const { authorId, authorName, authorRole, authorAvatar, caption, imageUrl } = req.body;
-
-    if (!authorId || (!caption && !imageUrl)) {
+    const { authorName, authorRole, authorAvatar, caption, imageUrl } = req.body;
+    const authorId = await resolveUserIdAsync(req);
+    if (!authorId) return res.status(401).json({ error: 'Authentication required' });
+    if (!caption && !imageUrl) {
       return res.status(400).json({ error: 'Missing required fields.' });
     }
 
@@ -29,18 +33,24 @@ postRoutes.post('/posts', async (req, res) => {
       const bytes = dataUrlByteLength(imageUrl);
       if (bytes > POST_IMAGE_HARD_MAX) {
         return res.status(400).json({
-          error: `Image exceeds maximum size of 1 MB (received ~${Math.round(bytes / 1024)} KB). Compress before upload.`,
+          error: `Image exceeds maximum size of 8 MB (received ~${Math.round(bytes / 1024)} KB). Compress before upload.`,
         });
       }
     }
+
+    // Upload any base64 image data to Cloudinary; Firestore only ever stores the URL.
+    const [hostedImageUrl, hostedAvatarUrl] = await Promise.all([
+      isDataUrl(imageUrl) ? uploadDataUrlToCloudinary(imageUrl, 'afflatus/posts') : imageUrl,
+      isDataUrl(authorAvatar) ? uploadDataUrlToCloudinary(authorAvatar, 'afflatus/avatars') : authorAvatar,
+    ]);
 
     const postDoc = {
       authorId,
       authorName,
       authorRole: authorRole || 'Creator',
-      authorAvatar: authorAvatar || null,
+      authorAvatar: hostedAvatarUrl || null,
       caption: caption || '',
-      imageUrl: imageUrl || null,
+      imageUrl: hostedImageUrl || null,
       likes: [],
       createdAt: new Date().toISOString(),
     };
@@ -136,8 +146,9 @@ postRoutes.put('/posts/:postId', async (req, res) => {
   try {
     const db = getAdminDb();
     const { postId } = req.params;
-    const { userId, caption, imageUrl } = req.body || {};
-    if (!userId) return res.status(401).json({ error: 'User ID is required' });
+    const { caption, imageUrl } = req.body || {};
+    const userId = await resolveUserIdAsync(req);
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
     const ref = db.collection('posts').doc(postId);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ error: 'Post not found' });
@@ -145,7 +156,11 @@ postRoutes.put('/posts/:postId', async (req, res) => {
     if (data.authorId !== userId) return res.status(403).json({ error: 'Only the author can edit this post' });
     const update: Record<string, unknown> = { updatedAt: new Date().toISOString() };
     if (typeof caption === 'string') update.caption = caption.slice(0, 5000);
-    if (typeof imageUrl === 'string') update.imageUrl = imageUrl;
+    if (typeof imageUrl === 'string') {
+      update.imageUrl = isDataUrl(imageUrl)
+        ? await uploadDataUrlToCloudinary(imageUrl, 'afflatus/posts')
+        : imageUrl;
+    }
     await ref.update(update);
     const next = await ref.get();
     return res.json({ success: true, post: { id: next.id, ...next.data() } });
@@ -159,10 +174,10 @@ postRoutes.post('/posts/:postId/like', async (req, res) => {
   try {
     const db = getAdminDb();
     const { postId } = req.params;
-    const { userId } = req.body;
+    const userId = await resolveUserIdAsync(req);
 
     if (!userId) {
-      return res.status(401).json({ error: 'User ID is required' });
+      return res.status(401).json({ error: 'Authentication required' });
     }
 
     // Incomplete profiles may browse but cannot Like
@@ -205,16 +220,14 @@ postRoutes.delete('/posts/:postId', async (req, res) => {
   try {
     const db = getAdminDb();
     const { postId } = req.params;
-    const userId =
-      (typeof req.headers['x-user-id'] === 'string' && req.headers['x-user-id']) ||
-      (typeof req.body?.userId === 'string' && req.body.userId) ||
-      '';
+    const userId = await resolveUserIdAsync(req);
+    if (!userId) return res.status(401).json({ error: 'Authentication required' });
 
     const ref = db.collection('posts').doc(postId);
     const snap = await ref.get();
     if (!snap.exists) return res.status(404).json({ error: 'Post not found' });
     const data = snap.data() || {};
-    if (userId && data.authorId && data.authorId !== userId) {
+    if (data.authorId !== userId) {
       return res.status(403).json({ error: 'Only the author can delete this post' });
     }
     await ref.delete();
