@@ -24,6 +24,7 @@ export function getDatabase(): DatabaseSchema {
     matches: [],
     workspaces: {},
     posts: [],
+    recommendationEvents: [],
   };
   return inMemoryDb;
 }

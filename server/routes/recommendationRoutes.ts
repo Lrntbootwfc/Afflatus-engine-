@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { QueryUnderstandingService } from '../services/queryUnderstandingService';
 import { RecommendationService } from '../services/recommendationService';
 import { listProjects, getUser, listUsers } from '../services/dataStore';
+import { resolveUserIdAsync } from '../services/firebaseAdmin';
 
 
 /** Lightweight project discovery from existing Explore project data (no invented rows). */
@@ -201,7 +202,7 @@ export const recommendationRoutes = Router();
 recommendationRoutes.post('/search', async (req, res) => {
   try {
     const body = req.body || {};
-    const requesterId = (typeof req.headers['x-user-id'] === 'string' && req.headers['x-user-id']) || body.requesterId || null;
+    const requesterId = (await resolveUserIdAsync(req)) || body.requesterId || null;
     
     // Minimal mock structured requirements from body
     const requirements = {
@@ -263,7 +264,7 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
     if (scope.intent === 'projects') {
       const lastUser = [...messages].reverse().find((m: any) => m.role === 'user')?.content || '';
       const requesterId =
-        (typeof req.headers['x-user-id'] === 'string' && req.headers['x-user-id']) ||
+        (await resolveUserIdAsync(req)) ||
         req.body?.requesterId ||
         null;
       let roleHint = '';
@@ -320,7 +321,7 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
     if (scope.intent === 'seeking_me') {
       const lastUser = [...messages].reverse().find((m: any) => m.role === 'user')?.content || '';
       const requesterId =
-        (typeof req.headers['x-user-id'] === 'string' && req.headers['x-user-id']) ||
+        (await resolveUserIdAsync(req)) ||
         req.body?.requesterId ||
         null;
       const found = await searchPeopleSeekingMyRoles({
@@ -352,7 +353,7 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
     }
 
     const data = understood.data;
-    const requesterId = typeof req.headers['x-user-id'] === 'string' ? req.headers['x-user-id'] : undefined;
+    const requesterId = (await resolveUserIdAsync(req)) || undefined;
     // Ensure roles[] for multi-role ranking
     if ((!data.roles || !Array.isArray(data.roles) || !data.roles.length) && data.role && data.role !== 'not_specified') {
       data.roles = [data.role];

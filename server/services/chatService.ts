@@ -86,7 +86,7 @@ export class ChatService {
     db.messages.push(userMsg);
 
     // AI understand
-    const understood = await QueryUnderstandingService.understandChat(content);
+    const understood = await QueryUnderstandingService.understandChat([{ role: 'user', content }]);
     let structured = understood.success ? understood.data : null;
     let candidates: any[] = [];
     let assistantText = 'I understood your request.';

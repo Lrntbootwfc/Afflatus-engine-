@@ -1,20 +1,15 @@
 import { Router } from 'express';
-import { ProfileService } from '../services/profileService';
+import { ProfileService, toPublicProfile } from '../services/profileService';
 import { PROFESSIONS, GENRES } from '../constants/professions';
 import { getOnboardingForProfessions, PROFESSION_ONBOARDING } from '../constants/onboarding';
-import { seedDemoCreators, isFirestoreEnabled } from '../services/dataStore';
+import { seedDemoCreators, isFirestoreEnabled, getUser } from '../services/dataStore';
 import { CollaborationAnalysisService } from '../services/collaborationAnalysisService';
+import { resolveUserIdAsync } from '../services/firebaseAdmin';
 
 export const profileRoutes = Router();
 
-/** Resolve userId from header or query (Firebase token later; for now compatible with existing app) */
-function resolveUserId(req: any): string | null {
-  const h = req.headers['x-user-id'] || req.headers['x-userid'];
-  if (typeof h === 'string' && h.trim()) return h.trim();
-  if (typeof req.query.userId === 'string') return req.query.userId;
-  if (typeof req.body?.userId === 'string') return req.body.userId;
-  return null;
-}
+/** Resolve userId: verified Firebase token first, x-user-id fallback in non-production only. */
+const resolveUserId = resolveUserIdAsync;
 
 // GET /api/skills  &  GET /api/interests  (catalog)
 profileRoutes.get('/skills', (_req, res) => {
@@ -95,8 +90,8 @@ profileRoutes.post('/profiles/analyze-collaboration', async (req, res) => {
 });
 
 // Users
-profileRoutes.get('/users/me', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.get('/users/me', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required (x-user-id header or ?userId=)' });
     return;
@@ -109,8 +104,8 @@ profileRoutes.get('/users/me', (req, res) => {
   res.json(profile);
 });
 
-profileRoutes.patch('/users/me', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.patch('/users/me', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -125,7 +120,7 @@ profileRoutes.patch('/users/me', (req, res) => {
 
 // Profiles (same data for now — source of truth is user doc)
 profileRoutes.get('/profiles/me', async (req, res) => {
-  const userId = resolveUserId(req);
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -149,8 +144,8 @@ profileRoutes.get('/profiles/me', async (req, res) => {
   res.json(profile);
 });
 
-profileRoutes.patch('/profiles/me', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.patch('/profiles/me', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -163,8 +158,8 @@ profileRoutes.patch('/profiles/me', (req, res) => {
   res.json(updated);
 });
 
-profileRoutes.put('/profiles/me/skills', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.put('/profiles/me/skills', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -182,8 +177,8 @@ profileRoutes.put('/profiles/me/skills', (req, res) => {
   res.json(updated);
 });
 
-profileRoutes.put('/profiles/me/interests', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.put('/profiles/me/interests', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -201,8 +196,8 @@ profileRoutes.put('/profiles/me/interests', (req, res) => {
   res.json(updated);
 });
 
-profileRoutes.get('/profiles/me/availability', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.get('/profiles/me/availability', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -215,8 +210,8 @@ profileRoutes.get('/profiles/me/availability', (req, res) => {
   res.json({ availability: (profile as any).availability || { status: 'available' } });
 });
 
-profileRoutes.put('/profiles/me/availability', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.put('/profiles/me/availability', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -234,8 +229,8 @@ profileRoutes.put('/profiles/me/availability', (req, res) => {
   res.json(updated);
 });
 
-profileRoutes.post('/profiles/me/portfolio', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.post('/profiles/me/portfolio', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -267,8 +262,8 @@ profileRoutes.post('/profiles/me/portfolio', (req, res) => {
   res.json(updated);
 });
 
-profileRoutes.delete('/profiles/me/portfolio/:id', (req, res) => {
-  const userId = resolveUserId(req);
+profileRoutes.delete('/profiles/me/portfolio/:id', async (req, res) => {
+  const userId = await resolveUserId(req);
   if (!userId) {
     res.status(401).json({ error: 'userId required' });
     return;
@@ -287,12 +282,3 @@ profileRoutes.delete('/profiles/me/portfolio/:id', (req, res) => {
   res.json(updated);
 });
 
-profileRoutes.post('/profiles/me/embed', async (req, res) => {
-  const userId = resolveUserId(req);
-  if (!userId) {
-    res.status(401).json({ error: 'userId required' });
-    return;
-  }
-  const result = await ProfileService.refreshEmbedding(userId);
-  res.json(result);
-});

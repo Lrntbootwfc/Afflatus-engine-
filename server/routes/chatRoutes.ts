@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getAdminDb } from '../services/firebaseAdmin';
+import { getAdminDb, resolveUserIdAsync } from '../services/firebaseAdmin';
 import { FieldValue } from 'firebase-admin/firestore';
 import { ChatService } from '../services/chatService';
 import { QueryUnderstandingService } from '../services/queryUnderstandingService';
@@ -7,54 +7,70 @@ import { TemporaryChatService } from '../services/temporaryChatService';
 
 export const chatRoutes = Router();
 
-function uid(req: any): string | null {
-  const h = req.headers['x-user-id'] || req.headers['x-userid'];
-  if (typeof h === 'string' && h.trim()) return h.trim();
-  if (typeof req.query.userId === 'string') return req.query.userId;
-  if (typeof req.body?.userId === 'string') return req.body.userId;
-  return null;
-}
+/** Resolve userId: verified Firebase token first, x-user-id fallback in non-production only. */
+const uid = resolveUserIdAsync;
 
 // Conversations
-chatRoutes.post('/chat/conversations', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  const c = ChatService.createConversation(userId, req.body?.title);
-  res.status(201).json(c);
+chatRoutes.post('/chat/conversations', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    const c = ChatService.createConversation(userId, req.body?.title);
+    res.status(201).json(c);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
-chatRoutes.get('/chat/conversations', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  res.json({ conversations: ChatService.listConversations(userId) });
+chatRoutes.get('/chat/conversations', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    res.json({ conversations: ChatService.listConversations(userId) });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
-chatRoutes.get('/chat/conversations/:conversationId', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  const c = ChatService.getConversation(req.params.conversationId, userId);
-  if (!c) return res.status(404).json({ error: 'Not found' });
-  res.json(c);
+chatRoutes.get('/chat/conversations/:conversationId', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    const c = ChatService.getConversation(req.params.conversationId, userId);
+    if (!c) return res.status(404).json({ error: 'Not found' });
+    res.json(c);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
-chatRoutes.get('/chat/conversations/:conversationId/messages', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  const messages = ChatService.getMessages(req.params.conversationId, userId);
-  if (!messages) return res.status(404).json({ error: 'Not found' });
-  res.json({ messages });
+chatRoutes.get('/chat/conversations/:conversationId/messages', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    const messages = ChatService.getMessages(req.params.conversationId, userId);
+    if (!messages) return res.status(404).json({ error: 'Not found' });
+    res.json({ messages });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
 chatRoutes.post('/chat/conversations/:conversationId/messages', async (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  const content = req.body?.content || req.body?.message || req.body?.prompt;
-  if (!content || typeof content !== 'string') {
-    return res.status(400).json({ error: 'content required' });
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    const content = req.body?.content || req.body?.message || req.body?.prompt;
+    if (!content || typeof content !== 'string') {
+      return res.status(400).json({ error: 'content required' });
+    }
+    const result = await ChatService.postMessage(req.params.conversationId, userId, content.trim());
+    if ((result as any).error) return res.status(404).json(result);
+    res.json(result);
+  } catch (err: any) {
+    console.error('[chat/messages]', err?.message || err);
+    res.status(500).json({ error: err?.message || 'Server error' });
   }
-  const result = await ChatService.postMessage(req.params.conversationId, userId, content.trim());
-  if ((result as any).error) return res.status(404).json(result);
-  res.json(result);
 });
 
 /**
@@ -67,7 +83,7 @@ chatRoutes.post('/briefs/parse-v2', async (req, res) => {
     if (!text || typeof text !== 'string') {
       return res.status(400).json({ error: 'text required' });
     }
-    const understood = await QueryUnderstandingService.understandChat(text);
+    const understood = await QueryUnderstandingService.understandChat([{ role: 'user', content: text }]);
     if (!understood.success || !understood.data) {
       return res.status(502).json({
         error: 'Understanding failed',
@@ -91,43 +107,55 @@ chatRoutes.post('/briefs/parse-v2', async (req, res) => {
 });
 
 // ---------- Temporary Chat Sessions (User-to-User) ----------
-chatRoutes.get('/temporary-chat/:connectionId', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  const messages = TemporaryChatService.getMessages(req.params.connectionId);
-  res.json({ messages });
-});
-
-chatRoutes.post('/temporary-chat/:connectionId', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  
-  const recipientId = req.body?.recipientId;
-  const text = req.body?.text;
-  
-  if (!recipientId || !text) {
-    return res.status(400).json({ error: 'recipientId and text required' });
+chatRoutes.get('/temporary-chat/:connectionId', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    const messages = TemporaryChatService.getMessages(req.params.connectionId);
+    res.json({ messages });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
   }
-
-  const message = TemporaryChatService.sendMessage({
-    connectionId: req.params.connectionId,
-    senderId: userId,
-    recipientId,
-    text
-  });
-  
-  res.status(201).json({ message });
 });
 
-chatRoutes.post('/temporary-chat/:connectionId/read', (req, res) => {
-  const userId = uid(req);
-  if (!userId) return res.status(401).json({ error: 'x-user-id required' });
-  TemporaryChatService.markRead(req.params.connectionId, userId);
-  res.json({ success: true });
+chatRoutes.post('/temporary-chat/:connectionId', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+
+    const recipientId = req.body?.recipientId;
+    const text = req.body?.text;
+
+    if (!recipientId || !text) {
+      return res.status(400).json({ error: 'recipientId and text required' });
+    }
+
+    const message = TemporaryChatService.sendMessage({
+      connectionId: req.params.connectionId,
+      senderId: userId,
+      recipientId,
+      text
+    });
+
+    res.status(201).json({ message });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
+});
+
+chatRoutes.post('/temporary-chat/:connectionId/read', async (req, res) => {
+  try {
+    const userId = await uid(req);
+    if (!userId) return res.status(401).json({ error: 'x-user-id required' });
+    TemporaryChatService.markRead(req.params.connectionId, userId);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
+  }
 });
 
 chatRoutes.post('/temporary-chat/:connectionId/collaborate', async (req, res) => {
-  const userId = uid(req);
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
 
   try {
@@ -143,7 +171,10 @@ chatRoutes.post('/temporary-chat/:connectionId/collaborate', async (req, res) =>
     }
     
     const connection = connectionDoc.data();
-    
+    if (!connection) {
+      return res.status(404).json({ error: 'Connection request not found.' });
+    }
+
     if (connection.senderId !== userId && connection.recipientId !== userId) {
       return res.status(403).json({ error: 'You are not part of this connection.' });
     }
@@ -192,7 +223,7 @@ chatRoutes.post('/temporary-chat/:connectionId/collaborate', async (req, res) =>
  * Requires the caller to have an active collaboration with the target.
  */
 chatRoutes.post('/feedback/:targetUserId', async (req, res) => {
-  const userId = uid(req);
+  const userId = await uid(req);
   if (!userId) return res.status(401).json({ error: 'x-user-id required' });
 
   try {
@@ -248,6 +279,9 @@ chatRoutes.post('/feedback/:targetUserId', async (req, res) => {
     }
     
     const targetUser = targetUserDoc.data();
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Target user not found.' });
+    }
 
     const currentProfile = targetUser.collaborationProfile || {
       creativity: 5,
@@ -306,7 +340,7 @@ chatRoutes.post('/feedback/:targetUserId', async (req, res) => {
     await batch.commit();
 
     res.json({ success: true, collaborationProfile: updatedProfile });
-  } catch (err) {
-    res.status(500).json({ error: err.message || 'Server error' });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Server error' });
   }
 });

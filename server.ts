@@ -15,18 +15,31 @@ import { projectRoutes } from './server/routes/projectRoutes';
 import { chatRoutes } from './server/routes/chatRoutes';
 import { postRoutes } from './server/routes/postRoutes';
 import { collaborationQuestionsRoutes } from './server/routes/collaborationQuestionsRoutes';
+import { uploadRoutes } from './server/routes/uploadRoutes';
+import { projectListingsRoutes } from './server/routes/projectListingsRoutes';
+import { AiAssistantService } from './server/services/aiAssistantService';
 
 import { getDatabase, saveDatabase } from './server/db';
 import type { DBUser } from './server/types';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// CORS for separate frontend origin
+// CORS for separate frontend origin — only reflect origins we explicitly allow,
+// never an arbitrary caller-supplied Origin header.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  }
   res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.header(
     'Access-Control-Allow-Headers',
@@ -62,6 +75,12 @@ app.use('/api', postRoutes);
 
 // Progressive collaboration questions (optional, non-blocking)
 app.use('/api/collaboration-questions', collaborationQuestionsRoutes);
+
+// Image uploads (Cloudinary) — avatar/cover banner, called before writing to Firestore
+app.use('/api', uploadRoutes);
+
+// Project listings — real, Firestore-backed "needed for a project" posts (separate from the legacy demo Projects feed)
+app.use('/api', projectListingsRoutes);
 
 // Lazy initialize Gemini API client with required User-Agent
 let aiClient: GoogleGenAI | null = null;
@@ -949,7 +968,7 @@ app.get('/api/creators', (req, res) => {
         u.username.toLowerCase().includes(q) ||
         u.primaryRole.toLowerCase().includes(q) ||
         u.location.toLowerCase().includes(q) ||
-        u.bio.toLowerCase().includes(q)
+        (u.bio || '').toLowerCase().includes(q)
     );
   }
 

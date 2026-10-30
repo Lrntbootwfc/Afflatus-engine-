@@ -1,5 +1,4 @@
 import {
-  getAllUsers,
   getAllProjects,
   getAllTasks,
   getAllClubs,
@@ -9,9 +8,9 @@ import {
   getTaskById,
   getClubById,
   getWorkShowcaseById,
-  getCreatorPublicWorkAndProjects,
   addConnection,
 } from '../db';
+import { listUsers, getUser } from './dataStore';
 import type {
   ExploreFeedResponse,
   ExploreRelatedResponse,
@@ -138,12 +137,14 @@ export class ExploreService {
   /**
    * Returns filtered and ranked discovery feed
    */
-  public static getExploreFeed(params: {
+  public static async getExploreFeed(params: {
     userId?: string;
     category?: string;
     search?: string;
-  }): ExploreFeedResponse {
-    const currentUser = params.userId ? getUserById(params.userId) : undefined;
+  }): Promise<ExploreFeedResponse> {
+    const currentUser = params.userId
+      ? ((await getUser(params.userId)) as CreatorProfile | null) || undefined
+      : undefined;
     const cat = (params.category || 'all').toLowerCase();
     const query = (params.search || '').trim().toLowerCase();
 
@@ -293,7 +294,7 @@ export class ExploreService {
     });
 
     // 5. Suggested Creators (with deterministic scoring & reason)
-    let allUsers = getAllUsers();
+    let allUsers = (await listUsers(300)) as CreatorProfile[];
     if (currentUser) {
       allUsers = allUsers.filter((u) => u.id !== currentUser.id);
     }
@@ -301,16 +302,16 @@ export class ExploreService {
     if (cat !== 'all') {
       allUsers = allUsers.filter(
         (u) =>
-          u.primaryRole.toLowerCase().includes(cat) ||
-          (u.secondaryRoles || []).some((r) => r.toLowerCase().includes(cat))
+          (u.primaryRole || '').toLowerCase().includes(cat) ||
+          (u.secondaryRoles || []).some((r) => (r || '').toLowerCase().includes(cat))
       );
     }
     if (query) {
       allUsers = allUsers.filter(
         (u) =>
-          u.name.toLowerCase().includes(query) ||
-          u.primaryRole.toLowerCase().includes(query) ||
-          u.location.toLowerCase().includes(query) ||
+          (u.name || '').toLowerCase().includes(query) ||
+          (u.primaryRole || '').toLowerCase().includes(query) ||
+          (u.location || '').toLowerCase().includes(query) ||
           (u.bio && u.bio.toLowerCase().includes(query))
       );
     }
@@ -343,7 +344,7 @@ export class ExploreService {
   /**
    * Retrieves single item detail
    */
-  public static getItemDetail(type: ExploreItemType, id: string): any {
+  public static async getItemDetail(type: ExploreItemType, id: string): Promise<any> {
     switch (type) {
       case 'work':
         return getWorkShowcaseById(id);
@@ -354,7 +355,7 @@ export class ExploreService {
       case 'club':
         return getClubById(id);
       case 'creator':
-        return getUserById(id);
+        return getUser(id);
       default:
         return null;
     }
@@ -363,8 +364,8 @@ export class ExploreService {
   /**
    * Work -> People Discovery: Returns interconnected items
    */
-  public static getRelatedContent(type: ExploreItemType, id: string): ExploreRelatedResponse {
-    const allUsers = getAllUsers();
+  public static async getRelatedContent(type: ExploreItemType, id: string): Promise<ExploreRelatedResponse> {
+    const allUsers = (await listUsers(300)) as CreatorProfile[];
     const allProjects = getAllProjects();
     const allTasks = getAllTasks();
     const allClubs = getAllClubs();
@@ -437,7 +438,7 @@ export class ExploreService {
         relatedTasks = allTasks.filter((t) => t.category === club.category);
       }
     } else if (type === 'creator') {
-      const creator = getUserById(id);
+      const creator = (await getUser(id)) as CreatorProfile | null;
       if (creator) {
         // Projects where creator is seeker or collaborator
         relatedProjects = allProjects.filter(
@@ -468,8 +469,30 @@ export class ExploreService {
   /**
    * Get public works and projects for a creator profile
    */
-  public static getCreatorPublicWork(creatorId: string) {
-    return getCreatorPublicWorkAndProjects(creatorId);
+  public static async getCreatorPublicWork(creatorId: string) {
+    const rawCreator = await getUser(creatorId);
+    if (!rawCreator) return null;
+
+    // Sanitize non-sensitive public profile info (do not expose email, auth, or private fields)
+    const { email, passwordHash, emergencyContact, ...publicCreator } = rawCreator as any;
+
+    const allProjects = getAllProjects();
+    const allWorks = getAllWorkShowcases();
+
+    const leadProjects = allProjects.filter((p) => p.seekerId === creatorId);
+    const participatedProjects = allProjects.filter(
+      (p) => (p.collaboratorIds || []).includes(creatorId) && p.seekerId !== creatorId
+    );
+    const works = allWorks.filter(
+      (w) => w.creatorId === creatorId || (w.collaboratorIds || []).includes(creatorId)
+    );
+
+    return {
+      creator: publicCreator as CreatorProfile,
+      leadProjects,
+      participatedProjects,
+      works,
+    };
   }
 
   /**
