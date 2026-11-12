@@ -6,7 +6,7 @@
 import type { Request } from 'express';
 import { getApps, getApp, initializeApp, type App } from 'firebase-admin/app';
 import { cert, applicationDefault } from 'firebase-admin/app';
-import { getAuth, type Auth } from 'firebase-admin/auth';
+import { getAuth as getFirebaseAuth, type Auth } from 'firebase-admin/auth';
 import { getFirestore, type Firestore } from 'firebase-admin/firestore';
 
 let adminApp: App | null = null;
@@ -41,7 +41,7 @@ function ensureInit() {
         return;
       }
     }
-    adminAuth = getAuth(adminApp);
+    adminAuth = getFirebaseAuth(adminApp);
     adminDb = getFirestore(adminApp);
     console.log('[FirebaseAdmin] Ready');
   } catch (err: any) {
@@ -55,6 +55,15 @@ export function getAdminDb() {
     throw new Error('Firebase Admin DB is not initialized.');
   }
   return adminDb;
+}
+
+/** Firebase Admin Auth instance (token verify, getUser). */
+export function getAuth(): Auth {
+  ensureInit();
+  if (!adminAuth) {
+    throw new Error('Firebase Admin Auth is not initialized.');
+  }
+  return adminAuth;
 }
 
 /** Verify Bearer token → uid, or null */

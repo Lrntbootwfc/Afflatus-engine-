@@ -11,7 +11,10 @@ service cloud.firestore {
       return isSignedIn()
         && request.auth.token.email is string
         && request.auth.token.email in [
-          'divyasharmagdscoist@gmail.com'
+          'divyasharmagdscoist@gmail.com',
+          'devbhagat383@gmail.com',
+          'akshayadoffical@gmail.com',
+          'dhruvbhardwaj401@gmail.com'
         ];
     }
     function myUserPath() {
@@ -185,6 +188,11 @@ service cloud.firestore {
         resource.data.collaboratorId == request.auth.uid
       );
       allow delete: if isSignedIn() && resource.data.seekerId == request.auth.uid;
+    }
+
+    // -------- EMAIL JOBS (backend Admin only) --------
+    match /emailJobs/{jobId} {
+      allow read, write: if false;
     }
     match /workspaces/{projectId} {
       allow read: if isSignedIn();

@@ -15,6 +15,9 @@ import { projectRoutes } from './server/routes/projectRoutes';
 import { chatRoutes } from './server/routes/chatRoutes';
 import { postRoutes } from './server/routes/postRoutes';
 import { collaborationQuestionsRoutes } from './server/routes/collaborationQuestionsRoutes';
+import { applicationRoutes } from './server/routes/applicationRoutes';
+import { emailWebhookRoutes } from './server/routes/emailWebhookRoutes';
+import { startEmailWorker, stopEmailWorker } from './server/services/email/emailWorker';
 import { uploadRoutes } from './server/routes/uploadRoutes';
 import { projectListingsRoutes } from './server/routes/projectListingsRoutes';
 import { AiAssistantService } from './server/services/aiAssistantService';
@@ -72,6 +75,10 @@ app.use('/api', chatRoutes);
 
 // Post routes for creating and viewing posts
 app.use('/api', postRoutes);
+
+// Join applications + transactional email webhooks
+app.use('/api', applicationRoutes);
+app.use('/api', emailWebhookRoutes);
 
 // Progressive collaboration questions (optional, non-blocking)
 app.use('/api/collaboration-questions', collaborationQuestionsRoutes);
@@ -1304,6 +1311,11 @@ async function startServer() {
       firebaseAdmin: isFirebaseAdminReady(),
     });
   });
+
+  startEmailWorker();
+
+  process.on('SIGTERM', () => { stopEmailWorker(); process.exit(0); });
+  process.on('SIGINT', () => { stopEmailWorker(); process.exit(0); });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Main Backend] Afflatus API running on http://localhost:${PORT}`);
