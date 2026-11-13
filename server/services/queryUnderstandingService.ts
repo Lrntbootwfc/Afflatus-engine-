@@ -15,7 +15,7 @@ export class QueryUnderstandingService {
   ): Promise<{
     inScope: boolean;
     wantsRecommendation?: boolean;
-    intent?: 'chat' | 'help' | 'creators' | 'projects' | 'seeking_me';
+    intent?: 'chat' | 'help' | 'creators' | 'projects' | 'seeking_me' | 'production_plan' | 'rental';
     reply?: string;
   }> {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
@@ -224,15 +224,50 @@ export class QueryUnderstandingService {
       };
     }
 
-    // --- 4b. Project discovery (projects needing a role / open projects) ---
-    const projectSignals = [
-      'project', 'projects', 'brief', 'briefs',
-    ];
-    const asksProjects =
-      projectSignals.some((k) => text.includes(k)) &&
-      /(open|find|show|any|related|suitable|for|near|about|filmmaking|available|looking for|need|require)/.test(text);
 
-    if (asksProjects || /project(s)? (open|for|related|looking|need)|open for (a )?(cinematograph|director|editor|producer|script)/.test(text)) {
+    // --- 4a2. PRODUCTION PLANNING (user is MAKING a film / needs crew / budget) ---
+    // Must run BEFORE generic "project" discovery so "making a short film" is not Explore search.
+    const productionPlanSignals = [
+      'making a', 'making an', 'i am making', "i'm making", 'we are making', "we're making",
+      'shooting a', 'producing a', 'pre production', 'pre-production', 'my short film',
+      'my film', 'my project', 'crew do i need', 'who do i need', 'who all', 'what crew',
+      'what team', 'roles do i need', 'team for', 'crew for', 'budget is', 'my budget',
+      'how to make a film', 'how to make a short', 'departments', 'staffing',
+    ];
+    const isProductionPlan =
+      productionPlanSignals.some((k) => text.includes(k)) ||
+      /who (all )?i (will |would )?need/.test(text) ||
+      /(make|making) (a |an )?(short |feature )?(film|movie|commercial|music video)/.test(text) ||
+      /find all (of )?(them|the people|the roles|crew)/.test(text);
+
+    const isRental =
+      /(rent|rental|on hire|hire (a |an )?(camera|lens|light|gimbal|gear|equipment)|equipment hire)/.test(text);
+
+    if (isRental) {
+      return {
+        inScope: true,
+        wantsRecommendation: false,
+        intent: 'rental',
+        reply: undefined,
+      };
+    }
+
+    if (isProductionPlan) {
+      return {
+        inScope: true,
+        wantsRecommendation: false,
+        intent: 'production_plan',
+        reply: undefined,
+      };
+    }
+
+    // --- 4b. Project discovery (projects needing a role / open projects) ---
+    // Only Explore *open projects* — not "I am making a project"
+    const asksOpenProjects =
+      /(open projects?|find projects?|show projects?|any projects?|projects? for|projects? (about|related|available|looking)|looking for (a )?project|join (a )?project|briefs?)/.test(text) &&
+      !/(i am making|i'm making|we are making|making a|my film|my short|crew do i need|who do i need)/.test(text);
+
+    if (asksOpenProjects || /open for (a )?(cinematograph|director|editor|producer|script)/.test(text)) {
       return {
         inScope: true,
         wantsRecommendation: true,
@@ -312,12 +347,14 @@ export class QueryUnderstandingService {
         {
           contents: `Afflatus is a film/creator collaboration app. Classify this message.
 Message: """${lastUser}"""
-JSON only: {"inScope":true|false,"intent":"chat"|"help"|"creators"|"projects"|"seeking_me","wantsRecommendation":true|false,"reply":"short helpful string if chat/help"}
+JSON only: {"inScope":true|false,"intent":"chat"|"help"|"creators"|"projects"|"seeking_me"|"production_plan"|"rental","wantsRecommendation":true|false,"reply":"short helpful string if chat/help"}
 Rules:
 - chat = greeting/small talk
 - help = how the app works / where UI is (no inventing features)
 - creators = find people by role/location
-- projects = find open projects/briefs needing a role
+- projects = find open projects/briefs already listed on Afflatus (not the user making their own film)
+- production_plan = user is making a film and needs crew/budget/roles advice
+- rental = camera/gear/studio rental
 - seeking_me = people whose seekingRoles match what the user offers (NOT people who are that role)
 - wantsRecommendation true for creators, projects, or seeking_me`,
           systemInstruction: 'Return valid JSON only.',

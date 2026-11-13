@@ -7,9 +7,10 @@ import { GoogleGenAI } from '@google/genai';
 
 /** Active ladder — order is preference. Dead 1.5 / 2.0 / 2.5 ids are intentionally absent. */
 export const GEMINI_MODEL_LADDER = [
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
-  'gemini-3.6-flash',
+"gemini-3.6-flash", 
+"gemini-3.8-flash",
+"gemini-3.5-flash-lite", 
+"gemini-3.1-flash-lite",
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
