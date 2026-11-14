@@ -5,16 +5,26 @@
  */
 import { GoogleGenAI } from '@google/genai';
 
-/** Active ladder — order is preference. Dead 1.5 / 2.0 / 2.5 ids are intentionally absent. */
+/**
+ * Active ladder — prefer Gemini 3.x when the key supports them, then fall back to
+ * widely available 2.x / flash-latest ids so production keys without 3.x access still work.
+ * (Deployed failures were often "all models unavailable" when only 3.x ids were listed.)
+ */
 export const GEMINI_MODEL_LADDER = [
-"gemini-3.6-flash", 
-"gemini-3.8-flash",
-"gemini-3.5-flash-lite", 
-"gemini-3.1-flash-lite",
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
   'gemini-3-flash-preview',
+  // Widely available fallbacks (local + most production API keys)
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-001',
+  'gemini-flash-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-1.5-flash',
 ] as const;
 
 export type GeminiModelId = (typeof GEMINI_MODEL_LADDER)[number];

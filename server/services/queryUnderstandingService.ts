@@ -15,7 +15,7 @@ export class QueryUnderstandingService {
   ): Promise<{
     inScope: boolean;
     wantsRecommendation?: boolean;
-    intent?: 'chat' | 'help' | 'creators' | 'projects' | 'seeking_me' | 'production_plan' | 'rental';
+    intent?: 'chat' | 'help' | 'creators' | 'projects' | 'seeking_me';
     reply?: string;
   }> {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
@@ -224,50 +224,15 @@ export class QueryUnderstandingService {
       };
     }
 
-
-    // --- 4a2. PRODUCTION PLANNING (user is MAKING a film / needs crew / budget) ---
-    // Must run BEFORE generic "project" discovery so "making a short film" is not Explore search.
-    const productionPlanSignals = [
-      'making a', 'making an', 'i am making', "i'm making", 'we are making', "we're making",
-      'shooting a', 'producing a', 'pre production', 'pre-production', 'my short film',
-      'my film', 'my project', 'crew do i need', 'who do i need', 'who all', 'what crew',
-      'what team', 'roles do i need', 'team for', 'crew for', 'budget is', 'my budget',
-      'how to make a film', 'how to make a short', 'departments', 'staffing',
-    ];
-    const isProductionPlan =
-      productionPlanSignals.some((k) => text.includes(k)) ||
-      /who (all )?i (will |would )?need/.test(text) ||
-      /(make|making) (a |an )?(short |feature )?(film|movie|commercial|music video)/.test(text) ||
-      /find all (of )?(them|the people|the roles|crew)/.test(text);
-
-    const isRental =
-      /(rent|rental|on hire|hire (a |an )?(camera|lens|light|gimbal|gear|equipment)|equipment hire)/.test(text);
-
-    if (isRental) {
-      return {
-        inScope: true,
-        wantsRecommendation: false,
-        intent: 'rental',
-        reply: undefined,
-      };
-    }
-
-    if (isProductionPlan) {
-      return {
-        inScope: true,
-        wantsRecommendation: false,
-        intent: 'production_plan',
-        reply: undefined,
-      };
-    }
-
     // --- 4b. Project discovery (projects needing a role / open projects) ---
-    // Only Explore *open projects* — not "I am making a project"
-    const asksOpenProjects =
-      /(open projects?|find projects?|show projects?|any projects?|projects? for|projects? (about|related|available|looking)|looking for (a )?project|join (a )?project|briefs?)/.test(text) &&
-      !/(i am making|i'm making|we are making|making a|my film|my short|crew do i need|who do i need)/.test(text);
+    const projectSignals = [
+      'project', 'projects', 'brief', 'briefs',
+    ];
+    const asksProjects =
+      projectSignals.some((k) => text.includes(k)) &&
+      /(open|find|show|any|related|suitable|for|near|about|filmmaking|available|looking for|need|require)/.test(text);
 
-    if (asksOpenProjects || /open for (a )?(cinematograph|director|editor|producer|script)/.test(text)) {
+    if (asksProjects || /project(s)? (open|for|related|looking|need)|open for (a )?(cinematograph|director|editor|producer|script)/.test(text)) {
       return {
         inScope: true,
         wantsRecommendation: true,
@@ -347,14 +312,12 @@ export class QueryUnderstandingService {
         {
           contents: `Afflatus is a film/creator collaboration app. Classify this message.
 Message: """${lastUser}"""
-JSON only: {"inScope":true|false,"intent":"chat"|"help"|"creators"|"projects"|"seeking_me"|"production_plan"|"rental","wantsRecommendation":true|false,"reply":"short helpful string if chat/help"}
+JSON only: {"inScope":true|false,"intent":"chat"|"help"|"creators"|"projects"|"seeking_me","wantsRecommendation":true|false,"reply":"short helpful string if chat/help"}
 Rules:
 - chat = greeting/small talk
 - help = how the app works / where UI is (no inventing features)
 - creators = find people by role/location
-- projects = find open projects/briefs already listed on Afflatus (not the user making their own film)
-- production_plan = user is making a film and needs crew/budget/roles advice
-- rental = camera/gear/studio rental
+- projects = find open projects/briefs needing a role
 - seeking_me = people whose seekingRoles match what the user offers (NOT people who are that role)
 - wantsRecommendation true for creators, projects, or seeking_me`,
           systemInstruction: 'Return valid JSON only.',
@@ -381,11 +344,111 @@ Rules:
     }
   }
 
-  static async understandChat(messages: { role: 'user' | 'assistant'; content: string }[]): Promise<{ success: boolean; data?: any; error?: string }> {
-    if (!process.env.GEMINI_API_KEY) {
-      return { success: false, error: 'GEMINI_API_KEY not configured' };
+  /**
+   * Deterministic role/location extraction when Gemini is unavailable or fails.
+   * Keeps AI Match usable in production even if GEMINI_API_KEY is missing or
+   * every model in the ladder returns unavailable for the deployed key.
+   */
+  static heuristicUnderstandFromMessages(
+    messages: { role: 'user' | 'assistant'; content: string }[]
+  ): any {
+    const combined = messages
+      .filter((m) => m.role === 'user')
+      .map((m) => String(m.content || ''))
+      .join(' \n ')
+      .toLowerCase();
+
+    const roleMap: Array<{ keys: RegExp; role: string }> = [
+      { keys: /\b(director of photography|dop\b|\bdp\b)/i, role: 'Director of Photography (DP)' },
+      { keys: /\bcinematograph/i, role: 'Cinematographer' },
+      { keys: /\b(camera operator|cam op)\b/i, role: 'Camera Operator (A-Cam / B-Cam)' },
+      { keys: /\b(1st ac|focus puller)\b/i, role: '1st Assistant Camera (1st AC / Focus Puller)' },
+      { keys: /\b(2nd ac|clapper)\b/i, role: '2nd Assistant Camera (2nd AC / Clapper Loader)' },
+      { keys: /\b(steadicam|gimbal)\b/i, role: 'Steadicam / Gimbal Specialist' },
+      { keys: /\b(drone|aerial)\b/i, role: 'Drone Pilot / Aerial Cinematographer' },
+      { keys: /\b\bdit\b/i, role: 'DIT (Digital Imaging Technician)' },
+      { keys: /\b(screen ?writer|script ?writer)\b/i, role: 'Screenwriter / Scriptwriter' },
+      { keys: /\bdirector\b/i, role: 'Director' },
+      { keys: /\b(executive producer)\b/i, role: 'Executive Producer' },
+      { keys: /\b(line producer)\b/i, role: 'Line Producer' },
+      { keys: /\b(creative producer|producer)\b/i, role: 'Creative Producer' },
+      { keys: /\b(1st ad)\b/i, role: '1st Assistant Director (1st AD)' },
+      { keys: /\b(2nd ad)\b/i, role: '2nd Assistant Director (2nd AD)' },
+      { keys: /\b(gaffer|lighting tech)\b/i, role: 'Gaffer / Chief Lighting Technician' },
+      { keys: /\b(key grip)\b/i, role: 'Key Grip' },
+      { keys: /\b(sound designer|sound recordist|sound engineer|audio)\b/i, role: 'Sound Designer / Audio Recordist' },
+      { keys: /\b(boom)\b/i, role: 'Boom Operator' },
+      { keys: /\b(composer|score)\b/i, role: 'Music Composer / Score Producer' },
+      { keys: /\b(colorist|davinci)\b/i, role: 'Colorist (DaVinci Resolve / Baselight)' },
+      { keys: /\b(vfx|compositor)\b/i, role: 'VFX Artist / Compositor' },
+      { keys: /\b(motion graphics|3d artist)\b/i, role: 'Motion Graphics / 3D Artist' },
+      { keys: /\b(video )?editor\b/i, role: 'Lead Video Editor' },
+      { keys: /\b(photographer|stills)\b/i, role: 'Photographer / BTS Stills Photographer' },
+      { keys: /\b(costume|stylist)\b/i, role: 'Costume Designer / Stylist' },
+      { keys: /\b(makeup|hmua)\b/i, role: 'Key Makeup & Hair Artist (HMUA)' },
+      { keys: /\b(production designer)\b/i, role: 'Production Designer' },
+      { keys: /\b(art director)\b/i, role: 'Art Director' },
+      { keys: /\b(actor|actress)\b/i, role: 'Actor' },
+    ];
+
+    const roles: string[] = [];
+    for (const entry of roleMap) {
+      if (entry.keys.test(combined) && !roles.includes(entry.role)) {
+        roles.push(entry.role);
+      }
     }
 
+    const cityPatterns = [
+      'mumbai', 'delhi', 'bengaluru', 'bangalore', 'hyderabad', 'chennai', 'kolkata',
+      'pune', 'ahmedabad', 'jaipur', 'chandigarh', 'kochi', 'goa', 'noida', 'gurgaon',
+      'gurugram', 'indore', 'bhopal', 'lucknow', 'coimbatore', 'mysuru', 'nagpur',
+    ];
+    let city = 'not_specified';
+    for (const c of cityPatterns) {
+      if (new RegExp(`\\b${c}\\b`, 'i').test(combined)) {
+        city = c.charAt(0).toUpperCase() + c.slice(1);
+        if (c === 'bangalore') city = 'Bengaluru';
+        if (c === 'gurgaon' || c === 'gurugram') city = 'Gurugram';
+        break;
+      }
+    }
+    // "in <City>" loose capture for cities not in the list
+    if (city === 'not_specified') {
+      const m = combined.match(/\bin\s+([a-z][a-z\s]{2,24}?)(?:\s|$|,|\.|!|\?)/i);
+      if (m && m[1] && !/the|a|an|my|our|this|that|need|looking|search/i.test(m[1].trim())) {
+        const raw = m[1].trim();
+        city = raw.charAt(0).toUpperCase() + raw.slice(1);
+      }
+    }
+
+    const genreList = ['horror', 'thriller', 'comedy', 'drama', 'documentary', 'commercial', 'fashion', 'music video', 'short film', 'feature'];
+    const genres = genreList.filter((g) => combined.includes(g));
+
+    const pref = (level: string, importance: string) => ({ level, importance });
+    const notSpec = pref('not_specified', 'optional');
+
+    return {
+      location: city !== 'not_specified' ? { city } : { city: 'not_specified' },
+      project_type: 'not_specified',
+      role: roles[0] || 'not_specified',
+      roles: roles.length ? roles : [],
+      genres,
+      minExperienceYears: null,
+      preferences: {
+        creativity: notSpec,
+        communication: notSpec,
+        reliability: notSpec,
+        flexibility: notSpec,
+        teamwork: notSpec,
+        feedback_openness: notSpec,
+        leadership: notSpec,
+        technical_proficiency: notSpec,
+      },
+      _source: 'heuristic',
+    };
+  }
+
+  static async understandChat(messages: { role: 'user' | 'assistant'; content: string }[]): Promise<{ success: boolean; data?: any; error?: string }> {
     const schema = {
       type: Type.OBJECT,
       properties: {
@@ -472,21 +535,37 @@ Never drop a requested role — always include every distinct role the user aske
     const formattedHistory = messages.map(m => `${m.role === 'user' ? 'User' : 'System'}: "${m.content}"`).join('\n');
     const prompt = `Chat History:\n${formattedHistory}\n\nBased on the ENTIRE conversation history above, extract the FINAL combined structured requirements that reflect the user's current intent.`;
 
+    // Prefer Gemini when configured; never hard-fail the chat — fall back to heuristics.
+    if (process.env.GEMINI_API_KEY) {
+      try {
+        const { text } = await generateContentWithFallback(
+          {
+            contents: prompt,
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema: schema,
+            temperature: 0.3,
+            useThinkingBudget: true,
+          },
+          '[QueryUnderstanding]'
+        );
+        const parsed = JSON.parse(text);
+        return { success: true, data: parsed };
+      } catch (err: any) {
+        console.error(
+          '[QueryUnderstanding] Gemini failed, using heuristic fallback:',
+          err?.message || err
+        );
+      }
+    } else {
+      console.warn('[QueryUnderstanding] GEMINI_API_KEY not configured — heuristic fallback');
+    }
+
     try {
-      const { text } = await generateContentWithFallback(
-        {
-          contents: prompt,
-          systemInstruction,
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-          temperature: 0.3,
-          useThinkingBudget: true,
-        },
-        '[QueryUnderstanding]'
-      );
-      return { success: true, data: JSON.parse(text) };
+      const data = this.heuristicUnderstandFromMessages(messages);
+      return { success: true, data };
     } catch (err: any) {
-      console.error('[QueryUnderstanding] Error:', err);
+      console.error('[QueryUnderstanding] Heuristic fallback failed:', err);
       return { success: false, error: err.message || 'Failed to understand query' };
     }
   }
