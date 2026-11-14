@@ -16,40 +16,41 @@ import { chatRoutes } from './server/routes/chatRoutes';
 import { postRoutes } from './server/routes/postRoutes';
 import { collaborationQuestionsRoutes } from './server/routes/collaborationQuestionsRoutes';
 import { applicationRoutes } from './server/routes/applicationRoutes';
-import { emailWebhookRoutes } from './server/routes/emailWebhookRoutes';
-import { startEmailWorker, stopEmailWorker } from './server/services/email/emailWorker';
-import { uploadRoutes } from './server/routes/uploadRoutes';
-import { projectListingsRoutes } from './server/routes/projectListingsRoutes';
-import { AiAssistantService } from './server/services/aiAssistantService';
 
 import { getDatabase, saveDatabase } from './server/db';
 import type { DBUser } from './server/types';
 
 const app = express();
+/** Render / cloud hosts inject PORT; local default 3000 */
 const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
-// CORS for separate frontend origin — only reflect origins we explicitly allow,
-// never an arbitrary caller-supplied Origin header.
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
-
+/**
+ * CORS — must send Access-Control-Allow-Origin on every response including OPTIONS.
+ * Production browser failures ("Could not reach the AI Match service") were caused by
+ * preflight/POST succeeding at the network layer but omitting ACAO, so the browser blocked JS.
+ * Use setHeader (not only res.header) and always set a concrete value.
+ */
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
-  if (origin && ALLOWED_ORIGINS.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-    res.header('Vary', 'Origin');
+  const origin = (req.headers.origin as string | undefined) || '';
+  // Reflect requesting origin when present (required if we ever send credentials).
+  // Fallback * for server-to-server / curl without Origin.
+  const allowOrigin = origin || '*';
+  res.setHeader('Access-Control-Allow-Origin', allowOrigin);
+  if (origin) {
+    res.setHeader('Vary', 'Origin');
   }
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.header(
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.setHeader(
     'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, x-user-id, x-userid, x-internal-secret'
+    'Content-Type, Authorization, x-user-id, x-userid, x-internal-secret, Accept, Origin'
   );
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  // Do not set Allow-Credentials with '*' — browsers reject that combination.
   if (req.method === 'OPTIONS') {
-    res.sendStatus(204);
+    res.status(204).end();
     return;
   }
   next();
@@ -60,6 +61,9 @@ app.use('/api/explore', exploreRoutes);
 
 // Mount C1 Personal AI Assistant Routes
 app.use('/api/assistant', assistantRoutes);
+
+// Admin join applications
+app.use('/api/applications', applicationRoutes);
 
 // Profile / users / skills / interests / availability (spec §25)
 app.use('/api', profileRoutes);
@@ -76,18 +80,8 @@ app.use('/api', chatRoutes);
 // Post routes for creating and viewing posts
 app.use('/api', postRoutes);
 
-// Join applications + transactional email webhooks
-app.use('/api', applicationRoutes);
-app.use('/api', emailWebhookRoutes);
-
 // Progressive collaboration questions (optional, non-blocking)
 app.use('/api/collaboration-questions', collaborationQuestionsRoutes);
-
-// Image uploads (Cloudinary) — avatar/cover banner, called before writing to Firestore
-app.use('/api', uploadRoutes);
-
-// Project listings — real, Firestore-backed "needed for a project" posts (separate from the legacy demo Projects feed)
-app.use('/api', projectListingsRoutes);
 
 // Lazy initialize Gemini API client with required User-Agent
 let aiClient: GoogleGenAI | null = null;
@@ -975,7 +969,7 @@ app.get('/api/creators', (req, res) => {
         u.username.toLowerCase().includes(q) ||
         u.primaryRole.toLowerCase().includes(q) ||
         u.location.toLowerCase().includes(q) ||
-        (u.bio || '').toLowerCase().includes(q)
+        u.bio.toLowerCase().includes(q)
     );
   }
 
@@ -1311,11 +1305,6 @@ async function startServer() {
       firebaseAdmin: isFirebaseAdminReady(),
     });
   });
-
-  startEmailWorker();
-
-  process.on('SIGTERM', () => { stopEmailWorker(); process.exit(0); });
-  process.on('SIGINT', () => { stopEmailWorker(); process.exit(0); });
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Main Backend] Afflatus API running on http://localhost:${PORT}`);

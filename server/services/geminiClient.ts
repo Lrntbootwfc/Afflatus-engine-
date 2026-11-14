@@ -1,38 +1,39 @@
 /**
  * Shared Gemini client + model fallback for Afflatus-engine.
- * Only uses current Gemini 3.x model ids. Caches the first model that works
- * for this process so subsequent requests do not walk a dead chain.
+ * Prefer models known to work for this project; skip dead ones quickly.
  */
 import { GoogleGenAI } from '@google/genai';
 
 /**
- * Active ladder — prefer Gemini 3.x when the key supports them, then fall back to
- * widely available 2.x / flash-latest ids so production keys without 3.x access still work.
- * (Deployed failures were often "all models unavailable" when only 3.x ids were listed.)
+ * Ladder ordered by real-world reliability for Afflatus (user-confirmed 3.6 worked).
+ * Avoid leading with unreleased / unavailable ids that hang the whole request.
  */
 export const GEMINI_MODEL_LADDER = [
-  'gemini-3.8-flash',
-  'gemini-3.7-flash',
+  // Confirmed working recently
   'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemini-3-flash-preview',
-  // Widely available fallbacks (local + most production API keys)
+  // Stable public flash models
   'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-2.0-flash-001',
   'gemini-flash-latest',
   'gemini-2.5-flash-lite',
+  // Optional newer / preview (tried after stable)
+  'gemini-3.1-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-3.7-flash',
+  'gemini-3.8-flash',
   'gemini-1.5-flash',
 ] as const;
 
 export type GeminiModelId = (typeof GEMINI_MODEL_LADDER)[number];
 
+/** Per-model hard cap so one stuck call cannot burn the full client timeout */
+const PER_MODEL_TIMEOUT_MS = 12_000;
+
 let aiClient: GoogleGenAI | null = null;
-/** Model that succeeded at least once in this process */
 let preferredModel: string | null = null;
-/** Models that failed with not-found / denied / unsupported in this process */
 const deadModels = new Set<string>();
 
 function getClient(): GoogleGenAI | null {
@@ -62,6 +63,7 @@ function isModelUnavailableError(err: any): boolean {
   if (msg.includes('permission_denied') || msg.includes('permission denied')) return true;
   if (msg.includes('not available to new users')) return true;
   if (msg.includes('unsupported')) return true;
+  if (msg.includes('timed out') || msg.includes('timeout')) return true;
   return false;
 }
 
@@ -78,20 +80,25 @@ function orderedModels(): string[] {
   return base;
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
+}
+
 export type GenerateArgs = {
   contents: string | unknown;
   systemInstruction?: string;
   responseMimeType?: string;
   responseSchema?: unknown;
   temperature?: number;
-  /** Skip thinkingBudget if the model rejects it */
   useThinkingBudget?: boolean;
 };
 
-/**
- * Call generateContent with model fallback.
- * Marks permanently unavailable models and prefers the last successful model.
- */
 export async function generateContentWithFallback(
   args: GenerateArgs,
   logPrefix = '[Gemini]'
@@ -123,11 +130,15 @@ export async function generateContentWithFallback(
         config.thinkingConfig = { thinkingBudget: 0 };
       }
 
-      const response = await ai.models.generateContent({
-        model,
-        contents: args.contents as any,
-        config: config as any,
-      });
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model,
+          contents: args.contents as any,
+          config: config as any,
+        }),
+        PER_MODEL_TIMEOUT_MS,
+        model
+      );
 
       const text =
         response?.text ||
@@ -156,7 +167,9 @@ export async function generateContentWithFallback(
       if (isRetryableTransient(err)) {
         continue;
       }
-      // Unknown error: try next model once
+      if (/timed out/i.test(String(err?.message || ''))) {
+        deadModels.add(model);
+      }
       continue;
     }
   }

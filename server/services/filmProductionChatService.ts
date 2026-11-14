@@ -150,7 +150,13 @@ function isRentalIntent(text: string): boolean {
 }
 
 function isCrewAdviceIntent(text: string): boolean {
-  return /(what (crew|team|roles)|who do i need|crew list|department|how many people|staffing)/i.test(
+  return /(what (crew|team|roles)|who do i need|crew list|department|how many people|staffing|what roles|team for (a |my )?(film|shoot|project)|who should i hire)/i.test(
+    text
+  );
+}
+
+function isFilmTechniqueIntent(text: string): boolean {
+  return /(frame rate|shutter|aspect ratio|log vs|rec\.?709|color grad|three[- ]point|continuity|coverage|master shot|b[- ]roll|timecode|picture lock|assembly cut|codec|bitrate|lens (choice|for)|depth of field|nd filter|white balance|audio levels|lav mic|boom technique)/i.test(
     text
   );
 }
@@ -208,13 +214,14 @@ function buildSystemPrompt(draft: ProductionDraft, profileSummary: string): stri
   return `You are Afflatus Assistant — a practical film & production collaborator chatbot for creators in India and worldwide.
 
 Your job:
-1. Talk like a helpful production coordinator, not a generic chatbot.
-2. Answer filmmaking questions (crew, departments, gear, workflow, roles).
+1. Talk like a helpful production coordinator and film craft advisor, not a generic chatbot.
+2. Answer ALL filmmaking questions: crew/departments, gear & rentals, budgets, workflow, roles, technique (lighting, camera, sound, editing, color, continuity, coverage), and how to staff a project.
 3. When someone is making a project: clarify type → suggest crew → ask budget if missing → then offer to find multi-skilled people on Afflatus.
 4. For rentals/equipment: suggest what to rent and that Afflatus can point to people/places in their network/area (do not invent shop names or phone numbers).
-5. Never invent real creator names, emails, or that a person exists on the platform.
+5. Never invent real creator names, emails, or that a person exists on the platform — only suggest searching Afflatus for roles.
 6. Keep replies concise (short paragraphs or bullets). Ask at most 1–2 questions at a time.
-7. If ready to match creators, end with a clear line that you can search Afflatus for those roles.
+7. If the user asks for people, crew, matches, or profiles — or confirms after you listed roles — make it clear you will search Afflatus and list the roles you will look for.
+8. For pure technique questions (e.g. frame rate, three-point lighting, log vs Rec.709), answer directly and usefully; optionally offer related crew/gear help at the end.
 
 Current production draft (may be partial):
 ${JSON.stringify(draft, null, 0)}
@@ -443,12 +450,19 @@ function guessRolesFromText(text: string): string[] {
   const roles: string[] = [];
   const t = text.toLowerCase();
   if (/dp|cinematograph|dop|director of photography/.test(t)) roles.push('Director of Photography');
-  if (/editor|edit\b|davinci|premiere/.test(t)) roles.push('Editor');
+  if (/editor|edit\b|davinci|premiere|final cut/.test(t)) roles.push('Editor');
   if (/sound|audio|recordist|boom/.test(t)) roles.push('Sound Recordist');
-  if (/gaffer|lighting/.test(t)) roles.push('Gaffer');
+  if (/gaffer|lighting tech/.test(t)) roles.push('Gaffer');
   if (/director\b/.test(t) && !/photography/.test(t)) roles.push('Director');
   if (/producer/.test(t)) roles.push('Producer');
-  return roles;
+  if (/colorist|color grade/.test(t)) roles.push('Colorist');
+  if (/1st ad|first ad|assistant director/.test(t)) roles.push('1st AD');
+  if (/screenwriter|script writer|writer/.test(t)) roles.push('Screenwriter');
+  if (/vfx|compositor/.test(t)) roles.push('VFX Artist');
+  if (/makeup|hmua/.test(t)) roles.push('Makeup Artist');
+  if (/production designer|art director/.test(t)) roles.push('Production Designer');
+  if (/drone/.test(t)) roles.push('Drone Pilot');
+  return [...new Set(roles)];
 }
 
 function buildDeterministicReply(
@@ -472,6 +486,14 @@ function buildDeterministicReply(
       );
     }
     return lines.join('\n');
+  }
+
+  if (isFilmTechniqueIntent(lastUser)) {
+    return (
+      'I can walk through filmmaking technique (camera, lighting, sound, editing, color, coverage) step by step.\n\n' +
+      'Tell me the specific craft area — e.g. "best frame rate for a dialogue scene", "three-point lighting for interview", or "log vs Rec.709 for web delivery" — and I will answer directly.\n\n' +
+      'When you are ready to staff the role that owns that craft, say "find me a [role]" and I will pull Afflatus profile cards.'
+    );
   }
 
   if (draft.projectType || isCrewAdviceIntent(lastUser)) {

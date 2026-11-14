@@ -7,7 +7,8 @@ export class QueryUnderstandingService {
    * Returns whether the latest user message is Afflatus/collaboration related.
    */
   /**
-   * Classify the latest user message: chat / help / creator match / project discovery.
+   * Classify the latest user message:
+   * chat / help / creators / projects / seeking_me / production_plan / rental / film_advice.
    * Never force greetings or navigation into creator ranking.
    */
   static async classifyAfflatusIntent(
@@ -15,7 +16,15 @@ export class QueryUnderstandingService {
   ): Promise<{
     inScope: boolean;
     wantsRecommendation?: boolean;
-    intent?: 'chat' | 'help' | 'creators' | 'projects' | 'seeking_me';
+    intent?:
+      | 'chat'
+      | 'help'
+      | 'creators'
+      | 'projects'
+      | 'seeking_me'
+      | 'production_plan'
+      | 'rental'
+      | 'film_advice';
     reply?: string;
   }> {
     const lastUser = [...messages].reverse().find((m) => m.role === 'user')?.content || '';
@@ -34,7 +43,7 @@ export class QueryUnderstandingService {
       greetings.some((g) => text === g || text === g + '!' || text === g + '.' || text === g + '?') ||
       /^(hi|hello|hey|good morning|good evening)([\s,!.?]|$)/i.test(text) ||
       /how are you|how's it going|how is it going|nice to meet you/i.test(text);
-    if (isGreeting && !/(find|need|cinematograph|project|collaborat|script|who )/i.test(text)) {
+    if (isGreeting && !/(find|need|cinematograph|project|collaborat|script|who |film|crew|budget)/i.test(text)) {
       // Answer the social question first — do not pitch Afflatus features here
       const howAreYou = /how are you|how's it going|how is it going|whats up|what's up/.test(text);
       return {
@@ -42,8 +51,8 @@ export class QueryUnderstandingService {
         wantsRecommendation: false,
         intent: 'chat',
         reply: howAreYou
-          ? "I'm doing well! How are you? What can I help you with today?"
-          : "Hi! How are you? What can I help you with today?",
+          ? "I'm doing well! How are you? Ask me anything about filmmaking, crew, budget, gear, or finding people on Afflatus."
+          : "Hi! Ask me anything about filmmaking, crew planning, rentals, or finding creators on Afflatus.",
       };
     }
 
@@ -59,10 +68,12 @@ export class QueryUnderstandingService {
         reply:
           "Afflatus is a collaboration platform for film and creative professionals. You can complete your creator profile, discover people and projects in Explore, publish posts and public works, send collaboration requests, message accepted connections, and leave peer collaboration feedback after you collaborate.\n\n" +
           "In this chat I can:\n" +
-          "• Find creators by role and location (e.g. \"cinematographer in Mumbai\")\n" +
+          "• Answer filmmaking questions (crew, budget, gear, technique, workflow)\n" +
+          "• Plan a production (short film, commercial, MV, doc) and suggest roles\n" +
+          "• Find creators by role and location — results show as profile cards\n" +
           "• Look for open projects related to a role or topic\n" +
           "• Explain where things live in the app (profile, Explore, messages, requests)\n\n" +
-          "Try asking for a role + place, open projects for your role, or \"where is my public profile?\"",
+          "Try: \"What crew do I need for a short film?\", \"DP in Mumbai\", or \"where is my public profile?\"",
       };
     }
 
@@ -175,6 +186,50 @@ export class QueryUnderstandingService {
       };
     }
 
+    // --- 3b. Film production planning / rental / general filmmaking advice ---
+    // Route these into the multi-turn film production chatbot (answers + optional cards).
+    const rentalSignals =
+      /(rent|rental|on hire|hire gear|hire camera|equipment rental|lens kit|light kit|studio space|sound stage|camera package)/i.test(
+        text
+      );
+    if (rentalSignals) {
+      return {
+        inScope: true,
+        wantsRecommendation: true,
+        intent: 'rental',
+      };
+    }
+
+    const productionPlanSignals =
+      /(short film|feature film|music video|documentary|commercial|ad film|brand film|making a (film|movie|video)|shoot a (film|movie)|my (film|project) budget|crew for|what crew|who do i need|staffing|call sheet|production plan|pre[- ]?production|post[- ]?production workflow)/i.test(
+        text
+      ) ||
+      (/\b(budget|lakh|crore)\b/i.test(text) &&
+        /\b(film|movie|shoot|production|crew|project)\b/i.test(text));
+    if (productionPlanSignals && !/find (me )?(a |an )?(dp|editor|director|cinematograph)/i.test(text)) {
+      return {
+        inScope: true,
+        wantsRecommendation: true,
+        intent: 'production_plan',
+      };
+    }
+
+    // Pure filmmaking knowledge (technique, gear theory, roles explained) — still in-scope
+    const filmAdviceSignals =
+      /(how (do|does|to|should)|what is|what's|explain|difference between|when (do|should)|why (do|should)|best (practice|way|lens|codec|format)|frame rate|shutter angle|aspect ratio|log vs rec|color grade|color grading|davinci|premiere|final cut|arri|red camera|blackmagic|gimbal|steadicam|three[- ]point lighting|continuity|script supervisor|coverage|master shot|b[- ]roll|slate|timecode|dailies|assembly cut|picture lock)/i.test(
+        text
+      ) &&
+      /(film|cinema|camera|lens|light|sound|edit|grade|shoot|scene|shot|crew|production|director|dp|cinematograph)/i.test(
+        text
+      );
+    if (filmAdviceSignals) {
+      return {
+        inScope: true,
+        wantsRecommendation: true,
+        intent: 'film_advice',
+      };
+    }
+
     // --- 4a. People SEEKING my skills (direction: my roles → their seekingRoles) ---
     // Critical: NOT the same as finding people whose primary role matches mine.
     const seekingMeSignals = [
@@ -251,12 +306,26 @@ export class QueryUnderstandingService {
     const roleSignals = [
       'cinematograph', 'director', 'editor', 'producer', 'gaffer', 'sound',
       'camera', 'writer', 'screenwriter', 'colorist', 'vfx', 'actor', 'photographer',
-      'dp', '1st ac', 'boom', 'composer', 'designer', 'collaborator',
+      'dp', 'dop', '1st ac', '2nd ac', 'boom', 'composer', 'designer', 'collaborator',
+      'focus puller', 'script supervisor', 'art director', 'costume', 'makeup',
+      'hmua', 'production designer', 'line producer', '1st ad', '2nd ad', 'dit',
+      'drone', 'steadicam', 'key grip', 'best boy', 'location scout', 'choreographer',
     ];
     const wantsCreators =
       findSignals.some((k) => text.includes(k)) ||
       (roleSignals.some((k) => text.includes(k)) &&
-        (text.includes('in ') || text.includes('for ') || text.includes('mumbai') || text.includes('delhi') || text.includes('find') || text.length > 20));
+        (text.includes('in ') ||
+          text.includes('for ') ||
+          text.includes('mumbai') ||
+          text.includes('delhi') ||
+          text.includes('bangalore') ||
+          text.includes('pune') ||
+          text.includes('hyderabad') ||
+          text.includes('chennai') ||
+          text.includes('find') ||
+          text.includes('need') ||
+          text.includes('looking') ||
+          text.length > 20));
 
     // Exclude if this was already classified as seeking_me style
     if (wantsCreators && !isSeekingMe && !clarifiesSeekingDirection) {
@@ -312,14 +381,18 @@ export class QueryUnderstandingService {
         {
           contents: `Afflatus is a film/creator collaboration app. Classify this message.
 Message: """${lastUser}"""
-JSON only: {"inScope":true|false,"intent":"chat"|"help"|"creators"|"projects"|"seeking_me","wantsRecommendation":true|false,"reply":"short helpful string if chat/help"}
+JSON only: {"inScope":true|false,"intent":"chat"|"help"|"creators"|"projects"|"seeking_me"|"production_plan"|"rental"|"film_advice","wantsRecommendation":true|false,"reply":"short helpful string if chat/help"}
 Rules:
 - chat = greeting/small talk
 - help = how the app works / where UI is (no inventing features)
-- creators = find people by role/location
+- creators = find people by role/location (e.g. DP in Mumbai)
 - projects = find open projects/briefs needing a role
 - seeking_me = people whose seekingRoles match what the user offers (NOT people who are that role)
-- wantsRecommendation true for creators, projects, or seeking_me`,
+- production_plan = planning a film/shoot, crew lists, budgets for a project
+- rental = camera/lighting/sound gear or studio rental
+- film_advice = technique, gear theory, workflows, role explanations (filmmaking Q&A)
+- wantsRecommendation true for creators, projects, seeking_me, production_plan, rental, film_advice
+- Almost all filmmaking questions are inScope=true`,
           systemInstruction: 'Return valid JSON only.',
           responseMimeType: 'application/json',
           temperature: 0.2,

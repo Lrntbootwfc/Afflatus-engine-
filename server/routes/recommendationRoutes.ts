@@ -282,13 +282,19 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
     const forceProduction =
       scope.intent === 'production_plan' ||
       scope.intent === 'rental' ||
+      scope.intent === 'film_advice' ||
       !!priorDraft?.projectType ||
       !!priorDraft?.rolesNeeded?.length ||
       peopleAskNow ||
       /find all (of )?(them|the people|the roles)/i.test(lastUserText) ||
       (/(short film|making a film|budget)/i.test(historyText) && peopleAskNow);
 
-    if (forceProduction || scope.intent === 'production_plan' || scope.intent === 'rental') {
+    if (
+      forceProduction ||
+      scope.intent === 'production_plan' ||
+      scope.intent === 'rental' ||
+      scope.intent === 'film_advice'
+    ) {
       const film = await handleFilmProductionTurn({
         messages: messages.map((m: any) => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
