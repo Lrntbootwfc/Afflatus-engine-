@@ -316,6 +316,15 @@ function availabilityScore(user: any) {
   return 0.5;
 }
 
+
+function isEligibleCreator(user: any): boolean {
+  if (!user?.id) return false;
+  const status = String(user.applicationStatus || user.status || '').toLowerCase();
+  const completed = user.profileCompleted === true;
+  // AI Match: only approved accounts with completed profiles
+  return completed && status === 'approved';
+}
+
 export class RecommendationService {
   static async searchFromRequirements(requirements: any, requesterId?: string | null) {
     let wantedRoles: string[] = [];
@@ -387,7 +396,7 @@ export class RecommendationService {
     };
 
     const scorePool = (users: any[], roleMode: 'strict' | 'related' | 'any', locMode: 'strict' | 'soft' | 'off') => {
-      let list = users;
+      let list = users.filter(isEligibleCreator);
       return list.map((user) => {
         const role = roleMatchScore(user, wantedRoles);
         const beh = behaviouralScore(user, prefs);
@@ -458,6 +467,8 @@ export class RecommendationService {
           location: (c.user as any).location || (c.user as any).city,
           bio: c.user.bio,
           travelPreference: (c.user as any).travelPreference,
+          profileCompleted: (c.user as any).profileCompleted === true,
+          applicationStatus: (c.user as any).applicationStatus || (c.user as any).status || '',
         },
       })),
       relaxed,

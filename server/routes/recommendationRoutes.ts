@@ -5,6 +5,22 @@ import { listProjects, getUser, listUsers } from '../services/dataStore';
 import { resolveUserIdAsync } from '../services/firebaseAdmin';
 import { handleFilmProductionTurn, type ProductionDraft } from '../services/filmProductionChatService';
 
+/** Only approved + profile-complete creators may appear in AI Match cards. */
+function isRecommendableCreator(u: any): boolean {
+  if (!u || !u.id) return false;
+  const status = String(u.applicationStatus || u.status || '').toLowerCase();
+  return u.profileCompleted === true && status === 'approved';
+}
+
+function filterRecommendableResults(results: any[]): any[] {
+  return (results || []).filter((c) => {
+    const p = c.profile || c;
+    const status = String(p.applicationStatus || p.status || '').toLowerCase();
+    return p.profileCompleted === true && status === 'approved';
+  });
+}
+
+
 
 /** Lightweight project discovery from existing Explore project data (no invented rows). */
 async function searchOpenProjects(opts: {
@@ -386,6 +402,7 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
               const pool = ((await listUsers(120)) || []) as any[];
               for (const u of pool) {
                 if (!u?.id || u.id === requesterIdEarly) continue;
+                if (!isRecommendableCreator(u)) continue;
                 if (byId.has(u.id)) continue;
                 const blob = `${u.primaryRole || ''} ${(u.secondaryRoles || []).join(' ')} ${u.bio || ''}`.toLowerCase();
                 const hit = roles.some((role) => {
@@ -420,9 +437,11 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
             }
           }
 
-          candidates = [...byId.values()]
-            .sort((a, b) => (b.score || 0) - (a.score || 0))
-            .slice(0, 12);
+          candidates = filterRecommendableResults(
+            [...byId.values()]
+              .sort((a, b) => (b.score || 0) - (a.score || 0))
+              .slice(0, 12)
+          );
 
           console.log('[ai-match] multi-role crew search', {
             roles,
@@ -705,6 +724,22 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
         ? data.location.city
         : null;
 
+    const classicCandidates = filterRecommendableResults(
+      (searchResult.results || []).map((c: any) => ({
+        userId: c.creatorId,
+        creatorId: c.creatorId,
+        score: c.score,
+        matchReasons: c.reasons,
+        scoreBreakdown: c.scoreBreakdown,
+        profile: {
+          ...(c.profile || {}),
+          id: c.profile?.id || c.creatorId,
+          applicationStatus: c.profile?.applicationStatus,
+          profileCompleted: c.profile?.profileCompleted,
+        },
+      }))
+    );
+
     res.json({
       success: true,
       understanding: data,
@@ -712,13 +747,10 @@ recommendationRoutes.post('/ai-match', async (req, res) => {
       locationSource,
       activeLocation: activeCity,
       relaxed: searchResult.relaxed || [],
-      candidates: (searchResult.results || []).map((c: any) => ({
-        userId: c.creatorId,
-        score: c.score,
-        matchReasons: c.reasons,
-        scoreBreakdown: c.scoreBreakdown,
-        profile: c.profile,
-      })),
+      candidates: classicCandidates,
+      results: classicCandidates,
+      showCards: classicCandidates.length > 0,
+      conversational: false,
     });
   } catch (err: any) {
     console.error('[recommendations/ai-match]', err);

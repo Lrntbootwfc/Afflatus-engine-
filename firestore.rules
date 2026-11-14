@@ -28,9 +28,6 @@ service cloud.firestore {
       return userDocExists()
         && get(myUserPath()).data.profileCompleted == true;
     }
-    match /{document=**} {
-      allow read, write: if false;
-    }
     // -------- USERS --------
     // Public read so Explore can show APPROVED creators (client filters pending).
     // Owner may edit profile immediately after approval, even if incomplete.
@@ -119,7 +116,7 @@ service cloud.firestore {
         && request.resource.data.text.size() < 4000
         && (
           request.resource.data.text.size() > 0
-          || request.resource.data.keys().hasAny(['sharedPost'])
+          || request.resource.data.keys().hasAny(['sharedPost', 'media'])
         );
       allow update: if isSignedIn()
         && resource.data.recipientId == request.auth.uid;
@@ -188,6 +185,25 @@ service cloud.firestore {
         resource.data.collaboratorId == request.auth.uid
       );
       allow delete: if isSignedIn() && resource.data.seekerId == request.auth.uid;
+    }
+
+
+    // -------- GROUPS / COMMUNITIES (messenger) --------
+    // Authenticated full access so list/create work immediately after publish.
+    // Tighten later once create/list is verified in production.
+    match /groups/{groupId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if request.auth != null;
+      allow delete: if request.auth != null
+        && resource.data.createdBy == request.auth.uid;
+    }
+    match /groupMessages/{messageId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+        && request.resource.data.senderId == request.auth.uid;
+      allow update, delete: if false;
     }
 
     // -------- EMAIL JOBS (backend Admin only) --------
